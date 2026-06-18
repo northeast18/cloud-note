@@ -32,7 +32,7 @@
  
 ### 1. 准备目录 
  
-新建空文件夹，放入 `worker.js`、`Wrangler.toml`（注意大小写，根据你的实际文件名）、`schema.sql`。 
+进入src目录，目录中有`worker.js`、`Wrangler.toml`（注意大小写，根据你的实际文件名）、`schema.sql`。 
  
 ### 2. 登录 Cloudflare 
  
