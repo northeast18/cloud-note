@@ -567,7 +567,7 @@ const PAGE = `<!doctype html>
   $('delBtn').onclick=deleteNote;
   $('newBtn').onclick=newNote;
   $('backBtn').onclick=function(){ if(dirty) saveNote(); $('app').classList.remove('viewing'); };
-  $('logoutBtn').onclick=function(){ api('/api/logout',{method:'POST'}).then(showLogin); };
+  $('logoutBtn').onclick=function(){ api('/api/logout',{method:'POST'}).then(function(){ location.reload(); }); };
   $('search').addEventListener('input', function(e){ query=e.target.value; renderList(); });
   document.addEventListener('keydown', function(e){
     if ((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==='s'){ e.preventDefault(); saveNote(); }
