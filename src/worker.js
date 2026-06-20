@@ -745,7 +745,11 @@ const PAGE = `<!doctype html>
           <option value="86400">1天</option>
           <option value="604800">7天</option>
           <option value="2592000">30天</option>
+          <option value="custom">自定义天数</option>
         </select>
+        <div id="shareCustomDaysWrap" style="display:none; margin-top: 8px;">
+          <input type="number" id="shareCustomDaysInput" min="1" placeholder="输入自定义天数" style="margin-bottom:0;">
+        </div>
       </div>
       <div id="shareResultArea" style="display:none; margin-bottom: 16px;">
         <input type="text" id="shareUrlInput" readonly style="margin-bottom:0;">
@@ -1084,6 +1088,8 @@ const PAGE = `<!doctype html>
       $('shareActionBtn').style.display = 'inline-block';
       $('copyShareBtn').style.display = 'none';
       $('shareExpireSelect').value = '0';
+      $('shareCustomDaysWrap').style.display = 'none';
+      $('shareCustomDaysInput').value = '';
       $('shareModal').classList.add('show');
     }
     if (dirty) {
@@ -1096,7 +1102,19 @@ const PAGE = `<!doctype html>
   function executeCreateShare() {
     var content = sanitize(editor.innerHTML);
     var titleText = deriveTitle();
-    var expires_in = parseInt($('shareExpireSelect').value, 10);
+    var expireVal = $('shareExpireSelect').value;
+    var expires_in = 0;
+    
+    if (expireVal === 'custom') {
+      var days = parseInt($('shareCustomDaysInput').value, 10);
+      if (isNaN(days) || days <= 0) {
+        alert('请输入有效的自定义天数（大于0的整数）');
+        return;
+      }
+      expires_in = days * 86400;
+    } else {
+      expires_in = parseInt(expireVal, 10);
+    }
 
     setStatus('准备分享…');
     api('/api/share', {
@@ -1392,6 +1410,12 @@ const PAGE = `<!doctype html>
     }
   };
   $('shareActionBtn').onclick = executeCreateShare;
+  $('shareExpireSelect').onchange = function() {
+    $('shareCustomDaysWrap').style.display = this.value === 'custom' ? 'block' : 'none';
+    if (this.value === 'custom') {
+      $('shareCustomDaysInput').focus();
+    }
+  };
   $('shareManageBtn').onclick = openShareManage;
   $('closeShareManageBtn').onclick = function() {
     $('shareManageModal').classList.remove('show');
