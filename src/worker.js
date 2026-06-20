@@ -197,7 +197,8 @@ async function sanitizeHtmlOnServer(htmlStr) {
   ]);
 
   function safeUrl(u) {
-    return /^(https?:|mailto:)/i.test(String(u || '').trim());
+    const val = String(u || '').trim();
+    return /^(https?:|mailto:)/i.test(val) || val.startsWith('/uploads/');
   }
 
   function cleanStyle(s) {
@@ -660,7 +661,10 @@ const PAGE = `<!doctype html>
     UL:1,OL:1,LI:1,H1:1,H2:1,H3:1,BLOCKQUOTE:1,IMG:1,FONT:1};
   var STYLE_PROPS = {'color':1,'background-color':1,'font-family':1,'font-size':1,
     'font-weight':1,'font-style':1,'text-decoration':1};
-  function safeUrl(u){ return /^(https?:|mailto:)/i.test(String(u||'').trim()); }
+  function safeUrl(u){
+    var val = String(u||'').trim();
+    return /^(https?:|mailto:)/i.test(val) || val.indexOf('/uploads/') === 0;
+  }
   function cleanStyle(s){
     var out=[];
     String(s||'').split(';').forEach(function(d){
