@@ -473,6 +473,9 @@ const PAGE = `<!doctype html>
       <h1>备忘</h1>
       <p>输入密码以解锁</p>
       <input id="pw" type="password" autocomplete="current-password" placeholder="密码">
+      <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; margin-top: 10px;">
+        <input type="checkbox" id="showPw"> 显示密码
+      </label>
       <button id="loginBtn">解锁</button>
       <div class="err" id="loginErr"></div>
     </div>
@@ -545,6 +548,7 @@ const PAGE = `<!doctype html>
     var len = bytes.byteLength;
     for (var i = 0; i < len; i++) {
       binary += String.fromCharCode(bytes[i]);
+    }
     return btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
   }
 
@@ -978,6 +982,7 @@ const PAGE = `<!doctype html>
   }
   $('loginBtn').onclick=doLogin;
   $('pw').addEventListener('keydown', function(e){ if(e.key==='Enter') doLogin(); });
+  $('showPw').onclick=function(){ $('pw').type=this.checked?'text':'password'; };
 
   var keyStr = sessionStorage.getItem('session_key');
   if (keyStr) {
