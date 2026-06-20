@@ -426,8 +426,8 @@ const PAGE = `<!doctype html>
   #login p{margin:0 0 18px;color:var(--muted);font-size:13px}
   #login input{width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink);font-size:15px}
   #login input:focus{outline:none;border-color:var(--accent)}
-  #login button{width:100%;margin-top:14px;padding:11px;border:none;border-radius:10px;background:var(--accent);color:#1d1d1f;font-weight:600}
-  #login button:disabled{opacity:.5;cursor:not-allowed}
+  #login #loginBtn{width:100%;margin-top:14px;padding:11px;border:none;border-radius:10px;background:var(--accent);color:#1d1d1f;font-weight:600}
+  #login #loginBtn:disabled{opacity:.5;cursor:not-allowed}
   #login .err{color:#d4584a;font-size:13px;min-height:18px;margin-top:10px}
   #app{display:flex;height:100vh;height:100dvh}
   .sidebar{width:300px;flex:0 0 300px;border-right:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column}
@@ -472,10 +472,15 @@ const PAGE = `<!doctype html>
     <div class="card">
       <h1>备忘</h1>
       <p>输入密码以解锁</p>
-      <input id="pw" type="password" autocomplete="current-password" placeholder="密码">
-      <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; margin-top: 10px;">
-        <input type="checkbox" id="showPw"> 显示密码
-      </label>
+      <div style="position: relative; width: 100%;">
+        <input id="pw" type="password" autocomplete="current-password" placeholder="密码" style="padding-right: 42px;">
+        <button id="togglePw" type="button" style="position: absolute; right: 12px; top: 50%; transform: translateY(-50%); border: none; background: transparent; cursor: pointer; color: var(--muted); padding: 0; display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; outline: none; margin: 0;">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+            <circle cx="12" cy="12" r="3"></circle>
+          </svg>
+        </button>
+      </div>
       <button id="loginBtn">解锁</button>
       <div class="err" id="loginErr"></div>
     </div>
@@ -982,7 +987,14 @@ const PAGE = `<!doctype html>
   }
   $('loginBtn').onclick=doLogin;
   $('pw').addEventListener('keydown', function(e){ if(e.key==='Enter') doLogin(); });
-  $('showPw').onclick=function(){ $('pw').type=this.checked?'text':'password'; };
+  $('togglePw').onclick=function(){
+    var pw=$('pw');
+    var isPw=pw.type==='password';
+    pw.type=isPw?'text':'password';
+    this.innerHTML=isPw
+      ?'<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle><line x1="1" y1="1" x2="23" y2="23"></line></svg>'
+      :'<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+  };
 
   var keyStr = sessionStorage.getItem('session_key');
   if (keyStr) {

@@ -1,1 +1,5 @@
 .wrangler/
+.env
+.dev.vars
+cookies.txt
+*.log
