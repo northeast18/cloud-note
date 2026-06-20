@@ -7,7 +7,7 @@ compatibility_date = "2026-06-01"
 [[d1_databases]]
 binding = "NOTE_DB"
 database_name = "notes-db"
-database_id = "在这里粘贴 d1 create 输出的 database_id"
+database_id = "099ff81f-bd87-481d-b561-3deab0ddbde1"
 
 # 说明：密码等机密不写在这里，部署后用 `wrangler secret put` 设置：
 #   AUTH_PASSWORD   登录密码
