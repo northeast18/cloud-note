@@ -414,7 +414,7 @@ const PAGE = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>备忘</title>
+<title>备忘录</title>
 <style>
   :root{--bg:#f4f4f6;--panel:#fff;--ink:#1d1d1f;--muted:#8a8a8f;--line:#e6e6ea;--sel:#fbf2dd;--accent:#c8932f;--code-bg:#f0f0f3}
   @media (prefers-color-scheme:dark){:root{--bg:#1a1a1c;--panel:#232326;--ink:#ededef;--muted:#8d8d93;--line:#34343a;--sel:#3a3220;--accent:#e0b25a;--code-bg:#2b2b30}}
@@ -466,12 +466,26 @@ const PAGE = `<!doctype html>
   #editor pre{background:var(--code-bg);padding:12px 14px;border-radius:9px;overflow:auto}
   #editor pre code{background:none;padding:0}
   @media (max-width:720px){.sidebar{flex-basis:100%;width:100%}.main{display:none}#app.viewing .sidebar{display:none}#app.viewing .main{display:flex}.toolbar .back{display:inline-block}}
+  .main.empty .edit-wrap,
+  .main.empty .toolbar,
+  .main.empty .fmtbar {
+    display: none !important;
+  }
+  .main.empty::after {
+    content: '请选择或新建备忘录';
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--muted);
+    font-size: 15px;
+  }
 </style>
 </head>
 <body>
   <div id="login">
     <div class="card">
-      <h1>备忘</h1>
+      <h1>备忘录</h1>
       <p>输入密码以解锁</p>
       <div style="position: relative; width: 100%;">
         <input id="pw" type="password" autocomplete="current-password" placeholder="密码" style="padding-right: 42px;">
@@ -491,7 +505,7 @@ const PAGE = `<!doctype html>
     <input type="file" id="fileInput" accept="image/*" style="display:none">
     <aside class="sidebar">
       <div class="sb-head">
-        <span class="grow">备忘</span>
+        <span class="grow">备忘录</span>
         <button class="icon-btn" id="newBtn" title="新建">+</button>
         <button class="icon-btn" id="logoutBtn" title="退出" style="font-size:15px">退出</button>
       </div>
@@ -707,7 +721,7 @@ const PAGE = `<!doctype html>
     if (t) return t.slice(0, 80);
     var lines=(editor.innerText||'').split('\\n');
     for (var i=0;i<lines.length;i++){ var line=lines[i].trim(); if(line) return line.slice(0,80); }
-    return '新建备忘';
+    return '新建备忘录';
   }
   function fmt(ts){
     var d=new Date(ts), now=new Date();
@@ -722,6 +736,14 @@ const PAGE = `<!doctype html>
   function showApp(){ $('login').style.display='none'; $('app').hidden=false; }
   function setStatus(s){ $('status').textContent=s||''; }
   function showFmt(on){ $('fmtbar').classList.toggle('show', !!on); }
+  function updateEditorState() {
+    var mainEl = document.querySelector('.main');
+    if (currentId === null) {
+      mainEl.classList.add('empty');
+    } else {
+      mainEl.classList.remove('empty');
+    }
+  }
 
   function loadNotes(){
     api('/api/notes').then(function(data){
@@ -738,7 +760,7 @@ const PAGE = `<!doctype html>
       });
       Promise.all(promises).then(function(decryptedNotes) {
         notes = decryptedNotes;
-        showApp(); renderList();
+        showApp(); renderList(); updateEditorState();
       });
     }).catch(function(err){
       $('loginBtn').disabled = false;
@@ -751,12 +773,12 @@ const PAGE = `<!doctype html>
     var shown=notes.filter(function(n){ return !q||(n.titlePlain||'').toLowerCase().indexOf(q)>=0; });
     if (!shown.length){
       var e=document.createElement('div'); e.className='empty-list';
-      e.textContent=q?'没有匹配的备忘':'还没有备忘，点右上角 + 新建';
+      e.textContent=q?'没有匹配的备忘录':'还没有备忘录，点右上角 + 新建';
       list.appendChild(e); return;
     }
     shown.forEach(function(n){
       var item=document.createElement('div'); item.className='item'+(n.id===currentId?' active':'');
-      var t=document.createElement('div'); t.className='t'; t.textContent=(n.titlePlain&&n.titlePlain.trim())?n.titlePlain:'新建备忘';
+      var t=document.createElement('div'); t.className='t'; t.textContent=(n.titlePlain&&n.titlePlain.trim())?n.titlePlain:'新建备忘录';
       var d=document.createElement('div'); d.className='d'; d.textContent=fmt(n.updated_at);
       item.appendChild(t); item.appendChild(d);
       item.onclick=function(){ openNote(n.id); };
@@ -775,6 +797,7 @@ const PAGE = `<!doctype html>
           editor.innerHTML=sanitize(decrypted[1]); refreshPlaceholder();
           setStatus('编辑于 '+fmt(note.updated_at)); renderList(); showFmt(true);
           $('app').classList.add('viewing'); editor.focus();
+          updateEditorState();
         });
       });
     }
@@ -791,12 +814,13 @@ const PAGE = `<!doctype html>
           body: JSON.stringify({ title: encrypted[0], content: encrypted[1], format: 2 })
         });
       }).then(function(n){
-        notes.unshift({ id:n.id, title:'', updated_at:n.updated_at, titlePlain:'新建备忘', format: 2 });
+        notes.unshift({ id:n.id, title:'', updated_at:n.updated_at, titlePlain:'新建备忘录', format: 2 });
         currentId=n.id; dirty=false;
         $('noteTitle').value = '';
         editor.innerHTML=''; refreshPlaceholder();
         setStatus('新建'); renderList(); showFmt(true);
         $('app').classList.add('viewing'); editor.focus();
+        updateEditorState();
       });
     }
     if (dirty) saveNote(go); else go();
@@ -826,7 +850,7 @@ const PAGE = `<!doctype html>
   }
   function deleteNote(){
     if (currentId===null) return;
-    if (!confirm('删除这条备忘？')) return;
+    if (!confirm('删除这条备忘录？')) return;
     var id=currentId;
     api('/api/notes/'+id,{method:'DELETE'}).then(function(){
       notes=notes.filter(function(x){return x.id!==id;});
@@ -834,6 +858,7 @@ const PAGE = `<!doctype html>
       $('noteTitle').value = '';
       editor.innerHTML=''; refreshPlaceholder();
       setStatus(''); renderList(); showFmt(false); $('app').classList.remove('viewing');
+      updateEditorState();
     });
   }
 
