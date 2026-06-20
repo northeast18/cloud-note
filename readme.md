@@ -1,6 +1,6 @@
 # 轻量备忘录 · 部署说明 
  
-基于 Cloudflare Workers + D1 的网页版富文本备忘录。密码登录、左列表右编辑、多端共享，全程跑在 Cloudflare 免费额度内。 
+基于 Cloudflare Workers + D1 的网页版富文本备忘录。密码登录、左列表右编辑、多端共享、便携分享，全程跑在 Cloudflare 免费额度内。 
  
 --- 
  
@@ -80,7 +80,7 @@ bucket_name = "notes-db-r2"
 npx wrangler d1 execute notes-db --remote --file=schema.sql 
 ``` 
  
-提示确认时输入 `y` 回车。建好 `notes` 和 `login_attempts` 两张表。 
+提示确认时输入 `y` 回车。建好 `notes`、`login_attempts` 和 `shared_notes` 三张表。 
  
 ### 6. 首次部署 
  
@@ -174,6 +174,7 @@ Windows 无 openssl 时，手敲一长串无规律字符即可（够长够乱）
  
 - **防爆破按 IP 限流**：用 Cloudflare 写入的 `CF-Connecting-IP` 作为键，客户端无法伪造。挡得住单机脚本爆破；换 IP 池 / 僵尸网络的分布式爆破挡不住，那需要再上 Turnstile 验证码或 Cloudflare WAF 限流规则。 
 - **端到端加密 (E2EE)**：已支持真正的客户端端到端加解密（基于 Web Crypto API / PBKDF2 / AES-GCM-256）。加解密逻辑和密钥（在解锁密码输入时衍生并暂存于 `sessionStorage`）**完全停留在浏览器本地**，服务端仅负责密文透传存取（`format: 2`）。即使 Worker 或 Cloudflare 平台遭到攻破，攻击者也绝对无法解密您的历史笔记。 
+- **便携分享链接（明文快照）**：支持单条加密备忘录的快捷公开分享。为了在分享便利的同时保证端到端加密的密钥不泄漏（避免因公开分享而暴露主密码），分享功能采用“客户端解密后上传明文快照”的架构。被分享的特定笔记会以明文形式上传至 `shared_notes` 表中生成只读预览链接；而所有未分享的备忘录仍然保持 100% 强端到端加密状态，服务端依然零知识，确保核心数据隐私不受任何波及。同时，分享内容在服务端会经过原生的 `HTMLRewriter` 进行防 XSS 消毒清洗。
 - **双重 HTML 消毒**：不仅在客户端编辑器做标签过滤，在 Worker 服务端也新增了利用原生 `HTMLRewriter` 执行的轻量级 XSS 消毒过滤，能拦截任何越过前端直接发送到后端接口的恶意富文本载荷，保证入库内容绝对安全。 
 - **R2 代理读取安全**：上传的图片和文件均保存在私有 R2 桶中，由 Worker 提供代理读取（`/uploads/:filename`），无需公开存储桶即可安全渲染，保护资源隐私。 
  
