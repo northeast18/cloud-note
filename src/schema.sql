@@ -14,3 +14,12 @@ CREATE TABLE IF NOT EXISTS login_attempts (
   first_fail_at INTEGER NOT NULL DEFAULT 0,
   banned_until INTEGER NOT NULL DEFAULT 0
 );
+
+-- 共享只读快照表
+CREATE TABLE IF NOT EXISTS shared_notes (
+  id TEXT PRIMARY KEY,               -- 8位随机安全唯一 ID
+  title TEXT NOT NULL,               -- 明文标题快照
+  content TEXT NOT NULL,             -- 明文 HTML 正文快照
+  created_at INTEGER NOT NULL,       -- 创建时间戳
+  expires_at INTEGER                 -- 过期时间戳（可空）
+);

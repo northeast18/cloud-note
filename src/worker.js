@@ -37,6 +37,7 @@ export default {
       if (p === '/api/login' && method === 'POST') return handleLogin(request, env);
       if (p === '/api/logout' && method === 'POST') return handleLogout();
       if (p.startsWith('/uploads/') && method === 'GET') return serveUpload(request, env, url);
+      if (p.startsWith('/s/') && method === 'GET') return serveShare(request, env, url);
       if (p.startsWith('/api/')) {
         if (!(await isAuthed(request, env))) return json({ error: 'unauthorized' }, 401);
         return handleApi(request, env, url);
@@ -307,6 +308,120 @@ async function serveUpload(request, env, url) {
   return new Response(object.body, { headers });
 }
 
+function generateShortId() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  let result = '';
+  for (let i = 0; i < 8; i++) {
+    result += chars[bytes[i] % chars.length];
+  }
+  return result;
+}
+
+async function handleCreateShare(request, env) {
+  const db = env.NOTE_DB;
+  const body = await request.json().catch(() => ({}));
+  const title = typeof body.title === 'string' ? body.title : '';
+  const content = typeof body.content === 'string' ? body.content : '';
+  
+  if (!title && !content) {
+    return json({ error: 'Content cannot be empty' }, 400);
+  }
+
+  const cleanContent = await sanitizeHtmlOnServer(content);
+
+  let id = '';
+  let success = false;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    id = generateShortId();
+    try {
+      await db.prepare(
+        'INSERT INTO shared_notes (id, title, content, created_at) VALUES (?, ?, ?, ?)'
+      ).bind(id, title, cleanContent, Date.now()).run();
+      success = true;
+      break;
+    } catch (e) {
+      console.error('ID collision or DB error in share:', e);
+    }
+  }
+
+  if (!success) {
+    return json({ error: 'Failed to generate a unique share link' }, 500);
+  }
+
+  return json({ id });
+}
+
+async function serveShare(request, env, url) {
+  const db = env.NOTE_DB;
+  const p = url.pathname;
+  const id = p.slice('/s/'.length);
+  if (!id) {
+    return new Response('Not Found', { status: 404 });
+  }
+
+  const row = await db.prepare(
+    'SELECT title, content, created_at FROM shared_notes WHERE id = ?'
+  ).bind(id).first();
+
+  if (!row) {
+    return new Response('分享链接不存在或已失效', { status: 404, headers: { 'Content-Type': 'text/html;charset=utf-8' } });
+  }
+
+  const escapeHtmlForTitle = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  const htmlStr = SHARE_PAGE_TEMPLATE
+    .replace('${TITLE}', escapeHtmlForTitle(row.title))
+    .replace('${RAW_TITLE}', JSON.stringify(row.title))
+    .replace('${RAW_DATE}', JSON.stringify(new Date(row.created_at).toLocaleString('zh-CN')))
+    .replace('${RAW_CONTENT}', JSON.stringify(row.content));
+
+  return html(htmlStr);
+}
+
+const SHARE_PAGE_TEMPLATE = `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>\${TITLE} - 备忘录分享</title>
+<style>
+  :root{--bg:#f4f4f6;--panel:#fff;--ink:#1d1d1f;--muted:#8a8a8f;--line:#e6e6ea;--accent:#c8932f;--code-bg:#f0f0f3}
+  @media (prefers-color-scheme:dark){:root{--bg:#1a1a1c;--panel:#232326;--ink:#ededef;--muted:#8d8d93;--line:#34343a;--accent:#e0b25a;--code-bg:#2b2b30}}
+  *{box-sizing:border-box}html,body{height:100%;margin:0}
+  body{font:16px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",Segoe UI,sans-serif;color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased;display:flex;flex-direction:column;align-items:center;padding:24px 16px}
+  .container{width:100%;max-width:680px;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:32px 28px;box-shadow:0 8px 30px rgba(0,0,0,.04);margin-top:20px}
+  h1{margin:0 0 16px 0;font-size:24px;font-weight:700;border-bottom:1px solid var(--line);padding-bottom:12px}
+  .meta{font-size:13px;color:var(--muted);margin-bottom:24px;display:flex;gap:12px}
+  .content{outline:none}
+  .content img{max-width:100%;border-radius:6px;margin:8px 0}
+  .content a{color:var(--accent);text-decoration:none}
+  .content a:hover{text-decoration:underline}
+  .content code{background:var(--code-bg);padding:2px 5px;border-radius:5px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.92em}
+  .content pre{background:var(--code-bg);padding:12px 14px;border-radius:9px;overflow:auto;margin:12px 0}
+  .content pre code{background:none;padding:0}
+  .footer{margin-top:40px;margin-bottom:20px;font-size:12px;color:var(--muted);text-align:center}
+</style>
+</head>
+<body>
+  <div class="container">
+    <h1 id="title"></h1>
+    <div class="meta">
+      <span id="date"></span>
+    </div>
+    <div class="content" id="content"></div>
+  </div>
+  <div class="footer">
+    由 <a href="/" style="color:var(--muted);text-decoration:none;font-weight:600">备忘录 (Cloud-Note)</a> 安全驱动
+  </div>
+  <script>
+    document.getElementById('title').textContent = \${RAW_TITLE};
+    document.getElementById('date').textContent = "分享于 " + \${RAW_DATE};
+    document.getElementById('content').innerHTML = \${RAW_CONTENT};
+  </script>
+</body>
+</html>`;
+
 // ---------- 业务 API ----------
 
 async function handleApi(request, env, url) {
@@ -314,6 +429,10 @@ async function handleApi(request, env, url) {
 
   if (p === '/api/upload' && method === 'POST') {
     return handleUpload(request, env);
+  }
+
+  if (p === '/api/share' && method === 'POST') {
+    return handleCreateShare(request, env);
   }
 
   if (p === '/api/notes') {
@@ -480,6 +599,17 @@ const PAGE = `<!doctype html>
     color: var(--muted);
     font-size: 15px;
   }
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.45);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;z-index:1000;opacity:0;pointer-events:none;transition:opacity 0.25s ease}
+  .modal-overlay.show{opacity:1;pointer-events:auto}
+  .modal-card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:24px;width:90%;max-width:440px;box-shadow:0 12px 40px rgba(0,0,0,0.15);transform:scale(0.9);transition:transform 0.25s ease;color:var(--ink)}
+  .modal-overlay.show .modal-card{transform:scale(1)}
+  .modal-card h3{margin:0 0 12px;font-size:18px;font-weight:600}
+  .modal-card p{margin:0 0 16px;color:var(--muted);font-size:13px}
+  .modal-card input{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-size:14px;margin-bottom:16px}
+  .modal-card input:focus{outline:none;border-color:var(--accent)}
+  .modal-actions{display:flex;justify-content:flex-end;gap:10px}
+  .modal-actions .btn{padding:8px 16px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink)}
+  .modal-actions .btn.primary{background:var(--accent);border-color:var(--accent);color:#1d1d1f;font-weight:600}
 </style>
 </head>
 <body>
@@ -516,6 +646,7 @@ const PAGE = `<!doctype html>
       <div class="toolbar">
         <button class="btn back" id="backBtn">返回</button>
         <span class="status" id="status"></span>
+        <button class="btn" id="shareBtn">分享</button>
         <button class="btn danger" id="delBtn">删除</button>
         <button class="btn primary" id="saveBtn">保存</button>
       </div>
@@ -554,6 +685,18 @@ const PAGE = `<!doctype html>
         <div id="editor" contenteditable="true" spellcheck="false" data-placeholder="开始输入…"></div>
       </div>
     </section>
+  </div>
+
+  <div id="shareModal" class="modal-overlay">
+    <div class="modal-card">
+      <h3>分享此备忘录</h3>
+      <p>生成公开链接后，任何人均可只读访问此条备忘录的明文快照。未分享的备忘录保持端到端加密。</p>
+      <input type="text" id="shareUrlInput" readonly>
+      <div class="modal-actions">
+        <button class="btn" id="closeShareBtn">关闭</button>
+        <button class="btn primary" id="copyShareBtn">复制链接</button>
+      </div>
+    </div>
   </div>
 
 <script>
@@ -862,6 +1005,36 @@ const PAGE = `<!doctype html>
     });
   }
 
+  function shareNote() {
+    if (currentId === null) return;
+    function proceedShare() {
+      setStatus('准备分享…');
+      var content = sanitize(editor.innerHTML);
+      var titleText = deriveTitle();
+
+      api('/api/share', {
+        method: 'POST',
+        body: JSON.stringify({ title: titleText, content: content })
+      }).then(function(res) {
+        if (res.id) {
+          var shareUrl = window.location.origin + '/s/' + res.id;
+          $('shareUrlInput').value = shareUrl;
+          $('shareModal').classList.add('show');
+          setStatus('分享链接已生成');
+        } else {
+          setStatus('生成分享链接失败: ' + (res.error || '未知错误'));
+        }
+      }).catch(function(err) {
+        setStatus('分享失败: ' + err);
+      });
+    }
+    if (dirty) {
+      saveNote(proceedShare);
+    } else {
+      proceedShare();
+    }
+  }
+
   // ---- 富文本（contenteditable + execCommand） ----
   function saveSel(){ var s=window.getSelection(); if (s.rangeCount && editor.contains(s.anchorNode)) savedRange=s.getRangeAt(0).cloneRange(); }
   function withSel(fn){
@@ -982,6 +1155,39 @@ const PAGE = `<!doctype html>
   $('delBtn').onclick=deleteNote;
   $('newBtn').onclick=newNote;
   $('backBtn').onclick=function(){ if(dirty) saveNote(); $('app').classList.remove('viewing'); };
+  $('shareBtn').onclick = shareNote;
+  $('closeShareBtn').onclick = function() {
+    $('shareModal').classList.remove('show');
+  };
+  $('shareModal').onclick = function(e) {
+    if (e.target === this) {
+      this.classList.remove('show');
+    }
+  };
+  $('copyShareBtn').onclick = function() {
+    var input = $('shareUrlInput');
+    input.select();
+    input.setSelectionRange(0, 99999);
+    var self = this;
+    function done() {
+      var old = self.textContent;
+      self.textContent = '已复制！';
+      self.disabled = true;
+      setTimeout(function() {
+        self.textContent = old;
+        self.disabled = false;
+      }, 2000);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(input.value).then(done).catch(function() {
+        document.execCommand('copy');
+        done();
+      });
+    } else {
+      document.execCommand('copy');
+      done();
+    }
+  };
   $('logoutBtn').onclick=function(){
     if(confirm('确定要退出登录吗？')) {
       sessionStorage.removeItem('session_key');
