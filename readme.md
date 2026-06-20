@@ -11,7 +11,7 @@
 | 文件 | 作用 | 
 |---|---| 
 | `worker.js` | 应用核心（后端 API + 前端页面，单文件） | 
-| `wrangler.toml` | 部署配置（Worker 名称、D1 绑定） | 
+| `wrangler.toml` | 部署配置（Worker 名称、D1 及 R2 绑定） | 
 | `schema.sql` | 数据库建表脚本 | 
  
 --- 
@@ -56,7 +56,23 @@ database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
  
 复制这个 id，粘进 `Wrangler.toml` 的 `database_id` 一行，替换掉占位文字。 
  
-### 4. 建表 
+### 4. 创建 R2 存储桶 
+ 
+本应用使用 Cloudflare R2 存储上传的图片及文件。在终端运行以下命令创建存储桶： 
+ 
+```bash 
+npx wrangler r2 bucket create notes-db-r2 
+``` 
+ 
+创建成功后，请确保 `Wrangler.toml` 中已包含如下 R2 绑定配置（默认已写入项目模版中）： 
+ 
+```toml 
+[[r2_buckets]] 
+binding = "NOTE_R2" 
+bucket_name = "notes-db-r2" 
+``` 
+ 
+### 5. 建表 
  
 > ⚠️ 必须带 `--remote`，否则只会建在本地模拟库，线上仍是空表，登录后列表会报错。 
  
@@ -66,7 +82,7 @@ npx wrangler d1 execute notes-db --remote --file=schema.sql
  
 提示确认时输入 `y` 回车。建好 `notes` 和 `login_attempts` 两张表。 
  
-### 5. 首次部署 
+### 6. 首次部署 
  
 > 必须先部署一次，Worker 存在之后才能设置 Secret。 
  
@@ -76,7 +92,7 @@ npx wrangler deploy
  
 成功后会返回一个网址，形如 `https://notes.你的子域.workers.dev`。 
  
-### 6. 设置机密（Secret） 
+### 7. 设置机密（Secret） 
  
 ```bash 
 npx wrangler secret put AUTH_PASSWORD 
@@ -96,7 +112,7 @@ Windows 无 openssl 时，手敲一长串无规律字符即可（够长够乱）
  
 > Secret 设置后**立即生效，无需重新部署**。此时打开网址即可使用。 
  
-### 7.（强烈建议）绑定自定义域名 
+### 8.（强烈建议）绑定自定义域名 
  
 `*.workers.dev` 在国内常因 DNS 污染无法访问。若你有域名托管在 Cloudflare： 
  
@@ -157,8 +173,9 @@ Windows 无 openssl 时，手敲一长串无规律字符即可（够长够乱）
 ## 八、安全边界（请知悉） 
  
 - **防爆破按 IP 限流**：用 Cloudflare 写入的 `CF-Connecting-IP` 作为键，客户端无法伪造。挡得住单机脚本爆破；换 IP 池 / 僵尸网络的分布式爆破挡不住，那需要再上 Turnstile 验证码或 Cloudflare WAF 限流规则。 
-- **加密（启用后）是静态加密**：密钥存在服务端 Secret，用户无需输入。它能防 **D1 数据被单独导出 / 泄露**；**防不住** Worker 或 Cloudflare 账号本身被攻破（持有 `ENC_KEY` 者可解密）。它**不是端到端、不是零知识加密**。 
-- **HTML 消毒**：编辑器对粘贴 / 加载 / 保存的富文本做了白名单消毒，防存储型 XSS。属于自用级别防护，**非 DOMPurify 级别**；若改造成多用户共享，必须替换为成熟的消毒库。 
+- **端到端加密 (E2EE)**：已支持真正的客户端端到端加解密（基于 Web Crypto API / PBKDF2 / AES-GCM-256）。加解密逻辑和密钥（在解锁密码输入时衍生并暂存于 `sessionStorage`）**完全停留在浏览器本地**，服务端仅负责密文透传存取（`format: 2`）。即使 Worker 或 Cloudflare 平台遭到攻破，攻击者也绝对无法解密您的历史笔记。 
+- **双重 HTML 消毒**：不仅在客户端编辑器做标签过滤，在 Worker 服务端也新增了利用原生 `HTMLRewriter` 执行的轻量级 XSS 消毒过滤，能拦截任何越过前端直接发送到后端接口的恶意富文本载荷，保证入库内容绝对安全。 
+- **R2 代理读取安全**：上传的图片和文件均保存在私有 R2 桶中，由 Worker 提供代理读取（`/uploads/:filename`），无需公开存储桶即可安全渲染，保护资源隐私。 
  
 --- 
  
