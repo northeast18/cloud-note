@@ -13,3 +13,8 @@ database_id = "在这里粘贴 d1 create 输出的 database_id"
 #   AUTH_PASSWORD   登录密码
 #   SESSION_SECRET  会话签名密钥（随机长串）
 #   ENC_KEY         可选，仅当以后把 worker.js 里 ENC_ENABLED 改成 true 时才需要
+
+# R2 存储桶绑定。用于存储上传的图片及文件。
+[[r2_buckets]]
+binding = "NOTE_R2"
+bucket_name = "notes-db-r2"

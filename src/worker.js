@@ -31,6 +31,7 @@ export default {
       if (method === 'GET' && p === '/') return html(PAGE);
       if (p === '/api/login' && method === 'POST') return handleLogin(request, env);
       if (p === '/api/logout' && method === 'POST') return handleLogout();
+      if (p.startsWith('/uploads/') && method === 'GET') return serveUpload(request, env, url);
       if (p.startsWith('/api/')) {
         if (!(await isAuthed(request, env))) return json({ error: 'unauthorized' }, 401);
         return handleApi(request, env, url);
@@ -166,10 +167,135 @@ async function decStore(env, data, format) {
   return new TextDecoder().decode(pt);
 }
 
+// ---------- 服务端 HTML 过滤 (HTMLRewriter XSS 消毒) ----------
+
+async function sanitizeHtmlOnServer(htmlStr) {
+  const ALLOWED_TAGS = new Set([
+    'a', 'b', 'strong', 'i', 'em', 'u', 's', 'strike', 'code', 'pre', 'span', 'div', 'p', 'br',
+    'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'blockquote', 'img', 'font'
+  ]);
+  const ALLOWED_STYLES = new Set([
+    'color', 'background-color', 'font-family', 'font-size', 'font-weight', 'font-style', 'text-decoration'
+  ]);
+
+  function safeUrl(u) {
+    return /^(https?:|mailto:)/i.test(String(u || '').trim());
+  }
+
+  function cleanStyle(s) {
+    const out = [];
+    String(s || '').split(';').forEach(d => {
+      const i = d.indexOf(':');
+      if (i < 0) return;
+      const prop = d.slice(0, i).trim().toLowerCase();
+      const val = d.slice(i + 1).trim();
+      if (/url\(|expression|javascript:/i.test(val)) return;
+      if (ALLOWED_STYLES.has(prop)) {
+        out.push(prop + ': ' + val);
+      }
+    });
+    return out.join('; ');
+  }
+
+  let transformed = new HTMLRewriter();
+  transformed = transformed.on('*', {
+    element(el) {
+      const tag = el.tagName.toLowerCase();
+      if (!ALLOWED_TAGS.has(tag)) {
+        el.removeAndKeepContent();
+        return;
+      }
+
+      const attrs = [...el.attributes];
+      for (const [name, val] of attrs) {
+        const lowerName = name.toLowerCase();
+        if (lowerName === 'style') {
+          const clean = cleanStyle(val);
+          if (clean) el.setAttribute('style', clean);
+          else el.removeAttribute('style');
+        } else if (lowerName === 'href' && tag === 'a') {
+          if (safeUrl(val)) {
+            el.setAttribute('href', val);
+          } else {
+            el.removeAttribute('href');
+          }
+        } else if (lowerName === 'src' && tag === 'img') {
+          if (safeUrl(val)) {
+            el.setAttribute('src', val);
+          } else {
+            el.remove();
+          }
+        } else if (tag === 'a' && (lowerName === 'target' || lowerName === 'rel')) {
+          // keep
+        } else if (tag === 'font' && (lowerName === 'size' || lowerName === 'color' || lowerName === 'face')) {
+          // keep
+        } else {
+          el.removeAttribute(name);
+        }
+      }
+
+      if (tag === 'a') {
+        el.setAttribute('target', '_blank');
+        el.setAttribute('rel', 'noopener noreferrer');
+      }
+    }
+  });
+
+  const response = new Response(htmlStr, { headers: { 'content-type': 'text/html;charset=utf-8' } });
+  const sanitizedResponse = transformed.transform(response);
+  return await sanitizedResponse.text();
+}
+
+// ---------- R2 文件上传与服务 ----------
+
+async function handleUpload(request, env) {
+  if (!env.NOTE_R2) {
+    return json({ error: 'R2 bucket not bound' }, 500);
+  }
+  try {
+    const formData = await request.formData();
+    const file = formData.get('file');
+    if (!file || !(file instanceof File)) {
+      return json({ error: 'No file uploaded' }, 400);
+    }
+    const ext = file.name.split('.').pop() || 'bin';
+    const filename = `${crypto.randomUUID()}.${ext}`;
+    await env.NOTE_R2.put(filename, file.stream(), {
+      httpMetadata: {
+        contentType: file.type || 'application/octet-stream',
+        cacheControl: 'public, max-age=31536000',
+      }
+    });
+    return json({ url: `/uploads/${filename}` });
+  } catch (e) {
+    return json({ error: 'Upload failed', detail: String(e) }, 500);
+  }
+}
+
+async function serveUpload(request, env, url) {
+  if (!env.NOTE_R2) {
+    return new Response('Not Found', { status: 404 });
+  }
+  const filename = url.pathname.slice('/uploads/'.length);
+  const object = await env.NOTE_R2.get(filename);
+  if (!object) {
+    return new Response('Not Found', { status: 404 });
+  }
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set('etag', object.httpEtag);
+  headers.set('Cache-Control', 'public, max-age=31536000');
+  return new Response(object.body, { headers });
+}
+
 // ---------- 业务 API ----------
 
 async function handleApi(request, env, url) {
   const p = url.pathname, method = request.method, db = env.NOTE_DB;
+
+  if (p === '/api/upload' && method === 'POST') {
+    return handleUpload(request, env);
+  }
 
   if (p === '/api/notes') {
     if (method === 'GET') {
@@ -177,16 +303,33 @@ async function handleApi(request, env, url) {
         'SELECT id, title, format, updated_at FROM notes ORDER BY updated_at DESC').all();
       const rows = r.results || [], out = [];
       for (const row of rows) {
-        out.push({ id: row.id, title: await decStore(env, row.title, row.format), updated_at: row.updated_at });
+        const title = row.format === 1 ? await decStore(env, row.title, row.format) : row.title;
+        out.push({ id: row.id, title, format: row.format, updated_at: row.updated_at });
       }
       return json(out);
     }
     if (method === 'POST') {
+      const b = await request.json().catch(() => ({}));
+      const format = typeof b.format === 'number' ? b.format : 0;
       const now = Date.now();
-      const e = await encStore(env, '');
+      
+      let finalTitle = '';
+      let finalContent = '';
+      let finalFormat = 0;
+      
+      if (format === 2) {
+        finalTitle = typeof b.title === 'string' ? b.title : '';
+        finalContent = typeof b.content === 'string' ? b.content : '';
+        finalFormat = 2;
+      } else {
+        const e = await encStore(env, '');
+        finalTitle = e.data;
+        finalContent = e.data;
+        finalFormat = e.format;
+      }
       const r = await db.prepare(
         'INSERT INTO notes (title, content, format, updated_at) VALUES (?,?,?,?)'
-      ).bind(e.data, e.data, e.format, now).run();
+      ).bind(finalTitle, finalContent, finalFormat, now).run();
       return json({ id: r.meta.last_row_id, updated_at: now });
     }
   }
@@ -198,22 +341,37 @@ async function handleApi(request, env, url) {
       const row = await db.prepare(
         'SELECT id, title, content, format, updated_at FROM notes WHERE id = ?').bind(id).first();
       if (!row) return json({ error: 'not_found' }, 404);
+      const isFormat1 = row.format === 1;
       return json({
         id: row.id,
-        title: await decStore(env, row.title, row.format),
-        content: await decStore(env, row.content, row.format),
+        title: isFormat1 ? await decStore(env, row.title, row.format) : row.title,
+        content: isFormat1 ? await decStore(env, row.content, row.format) : row.content,
+        format: row.format,
         updated_at: row.updated_at });
     }
     if (method === 'PUT') {
       const b = await request.json().catch(() => ({}));
       const title = typeof b.title === 'string' ? b.title.slice(0, 2000) : '';
-      const content = typeof b.content === 'string' ? b.content : '';
-      const et = await encStore(env, title);
-      const ec = await encStore(env, content);
+      let content = typeof b.content === 'string' ? b.content : '';
+      const format = typeof b.format === 'number' ? b.format : 0;
+      
+      let finalTitle, finalContent, finalFormat;
+      if (format === 2) {
+        finalTitle = title;
+        finalContent = content;
+        finalFormat = 2;
+      } else {
+        content = await sanitizeHtmlOnServer(content);
+        const et = await encStore(env, title);
+        const ec = await encStore(env, content);
+        finalTitle = et.data;
+        finalContent = ec.data;
+        finalFormat = et.format;
+      }
       const now = Date.now();
       await db.prepare(
         'UPDATE notes SET title=?, content=?, format=?, updated_at=? WHERE id=?'
-      ).bind(et.data, ec.data, ec.format, now, id).run();
+      ).bind(finalTitle, finalContent, finalFormat, now, id).run();
       return json({ ok: true, updated_at: now });
     }
     if (method === 'DELETE') {
@@ -303,6 +461,7 @@ const PAGE = `<!doctype html>
   </div>
 
   <div id="app" hidden>
+    <input type="file" id="fileInput" accept="image/*" style="display:none">
     <aside class="sidebar">
       <div class="sb-head">
         <span class="grow">备忘</span>
@@ -360,10 +519,103 @@ const PAGE = `<!doctype html>
   var notes = [], currentId = null, dirty = false, query = '', savedRange = null;
   var editor = document.getElementById('editor');
   var $ = function(id){ return document.getElementById(id); };
+  var sessionKey = null;
+
+  function base64urlEncode(arrayBuffer) {
+    var binary = '';
+    var bytes = new Uint8Array(arrayBuffer);
+    var len = bytes.byteLength;
+    for (var i = 0; i < len; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  function base64urlDecode(str) {
+    var base64 = str.replace(/-/g, '+').replace(/_/g, '/');
+    while (base64.length % 4) {
+      base64 += '=';
+    }
+    var binary = atob(base64);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes.buffer;
+  }
+
+  function deriveKey(password) {
+    var enc = new TextEncoder();
+    var passwordBuffer = enc.encode(password);
+    var salt = enc.encode('cloud-note-pbkdf2-salt');
+    return window.crypto.subtle.importKey(
+      'raw',
+      passwordBuffer,
+      { name: 'PBKDF2' },
+      false,
+      ['deriveKey']
+    ).then(function(baseKey) {
+      return window.crypto.subtle.deriveKey(
+        {
+          name: 'PBKDF2',
+          salt: salt,
+          iterations: 100000,
+          hash: 'SHA-256'
+        },
+        baseKey,
+        { name: 'AES-GCM', length: 256 },
+        true,
+        ['encrypt', 'decrypt']
+      );
+    }).then(function(key) {
+      sessionKey = key;
+      return window.crypto.subtle.exportKey('raw', key);
+    }).then(function(raw) {
+      sessionStorage.setItem('session_key', base64urlEncode(raw));
+    });
+  }
+
+  function encryptData(text) {
+    if (!sessionKey) return Promise.resolve(text || '');
+    var enc = new TextEncoder();
+    var iv = window.crypto.getRandomValues(new Uint8Array(12));
+    return window.crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv: iv },
+      sessionKey,
+      enc.encode(text || '')
+    ).then(function(ciphertext) {
+      return 'v2.' + base64urlEncode(iv) + '.' + base64urlEncode(ciphertext);
+    });
+  }
+
+  function decryptData(encryptedStr) {
+    if (!sessionKey) return Promise.resolve(encryptedStr || '');
+    if (!encryptedStr || !encryptedStr.startsWith('v2.')) return Promise.resolve(encryptedStr || '');
+    var parts = encryptedStr.split('.');
+    if (parts.length !== 3) return Promise.resolve(encryptedStr || '');
+    try {
+      var iv = base64urlDecode(parts[1]);
+      var ct = base64urlDecode(parts[2]);
+      return window.crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: new Uint8Array(iv) },
+        sessionKey,
+        ct
+      ).then(function(pt) {
+        return new TextDecoder().decode(pt);
+      }).catch(function() {
+        return '[解密失败：密码错误]';
+      });
+    } catch(e) {
+      return Promise.resolve('[解密失败：密文损坏]');
+    }
+  }
 
   function api(path, opts){
     opts = opts || {}; opts.credentials = 'same-origin';
-    opts.headers = Object.assign({ 'Content-Type':'application/json' }, opts.headers || {});
+    opts.headers = opts.headers || {};
+    if (!(opts.body instanceof FormData)) {
+      opts.headers['Content-Type'] = opts.headers['Content-Type'] || 'application/json';
+    }
     return fetch(path, opts).then(function(res){
       if (res.status === 401){ showLogin(); throw new Error('unauthorized'); }
       return res.json();
@@ -433,8 +685,21 @@ const PAGE = `<!doctype html>
 
   function loadNotes(){
     api('/api/notes').then(function(data){
-      notes=(data||[]).map(function(n){ n.titlePlain=n.title||''; return n; });
-      showApp(); renderList();
+      var promises = (data || []).map(function(n){
+        if (n.format === 2) {
+          return decryptData(n.title).then(function(decryptedTitle) {
+            n.titlePlain = decryptedTitle;
+            return n;
+          });
+        } else {
+          n.titlePlain = n.title || '';
+          return Promise.resolve(n);
+        }
+      });
+      Promise.all(promises).then(function(decryptedNotes) {
+        notes = decryptedNotes;
+        showApp(); renderList();
+      });
     }).catch(function(){});
   }
   function renderList(){
@@ -459,18 +724,29 @@ const PAGE = `<!doctype html>
   function openNote(id){
     function load(){
       api('/api/notes/'+id).then(function(note){
-        currentId=id; dirty=false;
-        editor.innerHTML=sanitize(note.content); refreshPlaceholder();
-        setStatus('编辑于 '+fmt(note.updated_at)); renderList(); showFmt(true);
-        $('app').classList.add('viewing'); editor.focus();
+        var contentPromise = note.format === 2 ? decryptData(note.content) : Promise.resolve(note.content || '');
+        contentPromise.then(function(decryptedContent) {
+          currentId=id; dirty=false;
+          editor.innerHTML=sanitize(decryptedContent); refreshPlaceholder();
+          setStatus('编辑于 '+fmt(note.updated_at)); renderList(); showFmt(true);
+          $('app').classList.add('viewing'); editor.focus();
+        });
       });
     }
     if (dirty) saveNote(load); else load();
   }
   function newNote(){
     function go(){
-      api('/api/notes',{method:'POST'}).then(function(n){
-        notes.unshift({ id:n.id, title:'', updated_at:n.updated_at, titlePlain:'新建备忘' });
+      Promise.all([
+        encryptData(''),
+        encryptData('')
+      ]).then(function(encrypted) {
+        return api('/api/notes',{
+          method:'POST',
+          body: JSON.stringify({ title: encrypted[0], content: encrypted[1], format: 2 })
+        });
+      }).then(function(n){
+        notes.unshift({ id:n.id, title:'', updated_at:n.updated_at, titlePlain:'新建备忘', format: 2 });
         currentId=n.id; dirty=false; editor.innerHTML=''; refreshPlaceholder();
         setStatus('新建'); renderList(); showFmt(true);
         $('app').classList.add('viewing'); editor.focus();
@@ -482,15 +758,24 @@ const PAGE = `<!doctype html>
     if (currentId===null) return;
     var content=sanitize(editor.innerHTML), titleText=deriveTitle();
     setStatus('保存中…');
-    api('/api/notes/'+currentId,{ method:'PUT', body: JSON.stringify({ title:titleText, content:content }) })
-      .then(function(r){
-        dirty=false;
-        var n=notes.find(function(x){return x.id===currentId;});
-        if(n){ n.titlePlain=titleText; n.updated_at=r.updated_at; }
-        notes.sort(function(a,b){return b.updated_at-a.updated_at;});
-        renderList(); setStatus('已保存 '+fmt(r.updated_at));
-        if (typeof after==='function') after();
+    Promise.all([
+      encryptData(titleText),
+      encryptData(content)
+    ]).then(function(encrypted) {
+      return api('/api/notes/'+currentId,{
+        method:'PUT',
+        body: JSON.stringify({ title: encrypted[0], content: encrypted[1], format: 2 })
       });
+    }).then(function(r){
+      dirty=false;
+      var n=notes.find(function(x){return x.id===currentId;});
+      if(n){ n.titlePlain=titleText; n.updated_at=r.updated_at; n.format=2; }
+      notes.sort(function(a,b){return b.updated_at-a.updated_at;});
+      renderList(); setStatus('已保存 '+fmt(r.updated_at));
+      if (typeof after==='function') after();
+    }).catch(function(err) {
+      setStatus('保存错误: ' + err);
+    });
   }
   function deleteNote(){
     if (currentId===null) return;
@@ -546,20 +831,75 @@ const PAGE = `<!doctype html>
       else document.execCommand('insertHTML',false,'<a href="'+escapeAttr(url)+'" target="_blank" rel="noopener noreferrer">'+escapeHtml(url)+'</a>');
     });
   });
+  function uploadFile(file) {
+    if (!file) return;
+    setStatus('图片上传中…');
+    var fd = new FormData();
+    fd.append('file', file);
+    api('/api/upload', {
+      method: 'POST',
+      body: fd
+    }).then(function(res) {
+      if (res.url) {
+        withSel(function() {
+          document.execCommand('insertImage', false, res.url);
+        });
+        setStatus('图片上传成功');
+      } else {
+        setStatus('图片上传失败: ' + (res.error || '未知错误'));
+      }
+    }).catch(function(e) {
+      setStatus('图片上传网络错误: ' + e);
+    });
+  }
+
+  $('fileInput').addEventListener('change', function(e) {
+    var file = e.target.files[0];
+    if (file) {
+      uploadFile(file);
+      e.target.value = '';
+    }
+  });
+
   $('bImg').addEventListener('click', function(){
-    var url=prompt('图片地址（http/https，仅插入链接，不上传）'); if(!url) return;
-    if(!/^https?:\\/\\//i.test(url)){ alert('仅支持 http/https 链接'); return; }
-    withSel(function(){ document.execCommand('insertImage',false,url); });
+    if (confirm('是否选择本地图片上传？（点取消可手动输入图片 URL）')) {
+      $('fileInput').click();
+    } else {
+      var url=prompt('请输入图片地址（http/https）'); if(!url) return;
+      if(!/^https?:/i.test(url)) url='https://'+url;
+      withSel(function(){ document.execCommand('insertImage',false,url); });
+    }
   });
   $('bClear').addEventListener('click', function(){ withSel(function(){ document.execCommand('removeFormat'); document.execCommand('unlink'); }); });
 
   editor.addEventListener('paste', function(e){
+    var items = (e.clipboardData || window.clipboardData).items;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image') !== -1) {
+        e.preventDefault();
+        var file = items[i].getAsFile();
+        uploadFile(file);
+        return;
+      }
+    }
     e.preventDefault();
     var cd=e.clipboardData||window.clipboardData;
     var htmlStr=cd.getData('text/html');
-    var clean=htmlStr?sanitize(htmlStr):escapeHtml(cd.getData('text/plain')).replace(/\\n/g,'<br>');
+    var clean=htmlStr?sanitize(htmlStr):escapeHtml(cd.getData('text/plain')).replace(/\n/g,'<br>');
     document.execCommand('insertHTML',false,clean);
     dirty=true; setStatus('未保存'); refreshPlaceholder();
+  });
+  editor.addEventListener('drop', function(e){
+    var files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      for (var i = 0; i < files.length; i++) {
+        if (files[i].type.indexOf('image') !== -1) {
+          e.preventDefault();
+          uploadFile(files[i]);
+          return;
+        }
+      }
+    }
   });
   editor.addEventListener('input', function(){ dirty=true; setStatus('未保存'); refreshPlaceholder(); });
 
@@ -567,7 +907,12 @@ const PAGE = `<!doctype html>
   $('delBtn').onclick=deleteNote;
   $('newBtn').onclick=newNote;
   $('backBtn').onclick=function(){ if(dirty) saveNote(); $('app').classList.remove('viewing'); };
-  $('logoutBtn').onclick=function(){ if(confirm('确定要退出登录吗？')) api('/api/logout',{method:'POST'}).then(function(){ location.reload(); }); };
+  $('logoutBtn').onclick=function(){
+    if(confirm('确定要退出登录吗？')) {
+      sessionStorage.removeItem('session_key');
+      api('/api/logout',{method:'POST'}).then(function(){ location.reload(); });
+    }
+  };
   $('search').addEventListener('input', function(e){ query=e.target.value; renderList(); });
   document.addEventListener('keydown', function(e){
     if ((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==='s'){ e.preventDefault(); saveNote(); }
@@ -575,11 +920,20 @@ const PAGE = `<!doctype html>
   window.addEventListener('beforeunload', function(e){ if(dirty){ e.preventDefault(); e.returnValue=''; } });
 
   function doLogin(){
+    var pwVal = $('pw').value;
     $('loginErr').textContent=''; $('loginBtn').disabled=true;
     fetch('/api/login',{ method:'POST', credentials:'same-origin',
-      headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ password:$('pw').value }) })
+      headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ password:pwVal }) })
       .then(function(res){
-        if (res.ok){ $('pw').value=''; $('loginBtn').disabled=false; loadNotes(); return; }
+        if (res.ok){
+          deriveKey(pwVal).then(function() {
+            $('pw').value=''; $('loginBtn').disabled=false; loadNotes();
+          }).catch(function(e) {
+            $('loginBtn').disabled=false;
+            $('loginErr').textContent='密钥派生错误';
+          });
+          return;
+        }
         return res.json().then(function(d){
           $('loginBtn').disabled=false;
           if (res.status===429) $('loginErr').textContent='尝试过多，请约 '+(d.retry_after||60)+' 秒后再试';
@@ -592,7 +946,23 @@ const PAGE = `<!doctype html>
   $('loginBtn').onclick=doLogin;
   $('pw').addEventListener('keydown', function(e){ if(e.key==='Enter') doLogin(); });
 
-  loadNotes();
+  var keyStr = sessionStorage.getItem('session_key');
+  if (keyStr) {
+    window.crypto.subtle.importKey(
+      'raw',
+      base64urlDecode(keyStr),
+      { name: 'AES-GCM' },
+      false,
+      ['encrypt', 'decrypt']
+    ).then(function(key) {
+      sessionKey = key;
+      loadNotes();
+    }).catch(function() {
+      showLogin();
+    });
+  } else {
+    showLogin();
+  }
 })();
 </script>
 </body>
