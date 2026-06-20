@@ -545,8 +545,7 @@ const PAGE = `<!doctype html>
     var len = bytes.byteLength;
     for (var i = 0; i < len; i++) {
       binary += String.fromCharCode(bytes[i]);
-    }
-    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
   }
 
   function base64urlDecode(str) {
@@ -913,7 +912,7 @@ const PAGE = `<!doctype html>
     e.preventDefault();
     var cd=e.clipboardData||window.clipboardData;
     var htmlStr=cd.getData('text/html');
-    var clean=htmlStr?sanitize(htmlStr):escapeHtml(cd.getData('text/plain')).replace(/\n/g,'<br>');
+    var clean=htmlStr?sanitize(htmlStr):escapeHtml(cd.getData('text/plain')).replace(/\\n/g,'<br>');
     document.execCommand('insertHTML',false,clean);
     dirty=true; setStatus('未保存'); refreshPlaceholder();
   });
