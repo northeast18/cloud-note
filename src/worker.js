@@ -323,6 +323,8 @@ async function handleCreateShare(request, env) {
   const body = await request.json().catch(() => ({}));
   const title = typeof body.title === 'string' ? body.title : '';
   const content = typeof body.content === 'string' ? body.content : '';
+  const expiresIn = typeof body.expires_in === 'number' ? body.expires_in : null;
+  const expiresAt = expiresIn ? Date.now() + expiresIn * 1000 : null;
   
   if (!title && !content) {
     return json({ error: 'Content cannot be empty' }, 400);
@@ -336,8 +338,8 @@ async function handleCreateShare(request, env) {
     id = generateShortId();
     try {
       await db.prepare(
-        'INSERT INTO shared_notes (id, title, content, created_at) VALUES (?, ?, ?, ?)'
-      ).bind(id, title, cleanContent, Date.now()).run();
+        'INSERT INTO shared_notes (id, title, content, created_at, expires_at) VALUES (?, ?, ?, ?, ?)'
+      ).bind(id, title, cleanContent, Date.now(), expiresAt).run();
       success = true;
       break;
     } catch (e) {
@@ -361,10 +363,10 @@ async function serveShare(request, env, url) {
   }
 
   const row = await db.prepare(
-    'SELECT title, content, created_at FROM shared_notes WHERE id = ?'
+    'SELECT title, content, created_at, expires_at FROM shared_notes WHERE id = ?'
   ).bind(id).first();
 
-  if (!row) {
+  if (!row || (row.expires_at && row.expires_at < Date.now())) {
     return new Response('分享链接不存在或已失效', { status: 404, headers: { 'Content-Type': 'text/html;charset=utf-8' } });
   }
 
@@ -439,6 +441,29 @@ async function handleApi(request, env, url) {
 
   if (p === '/api/share' && method === 'POST') {
     return handleCreateShare(request, env);
+  }
+
+  if (p === '/api/shares' && method === 'GET') {
+    const r = await db.prepare(
+      'SELECT id, title, created_at, expires_at FROM shared_notes ORDER BY created_at DESC'
+    ).all();
+    return json(r.results || []);
+  }
+
+  const mShareDel = p.match(/^\/api\/shares\/([A-Za-z0-9]+)$/);
+  if (mShareDel && method === 'DELETE') {
+    const shareId = mShareDel[1];
+    await db.prepare('DELETE FROM shared_notes WHERE id = ?').bind(shareId).run();
+    return json({ ok: true });
+  }
+
+  const mShareExtend = p.match(/^\/api\/shares\/([A-Za-z0-9]+)\/extend$/);
+  if (mShareExtend && method === 'POST') {
+    const shareId = mShareExtend[1];
+    const body = await request.json().catch(() => ({}));
+    const expiresAt = typeof body.expires_at === 'number' ? body.expires_at : null;
+    await db.prepare('UPDATE shared_notes SET expires_at = ? WHERE id = ?').bind(expiresAt, shareId).run();
+    return json({ ok: true });
   }
 
   if (p === '/api/notes') {
@@ -616,6 +641,16 @@ const PAGE = `<!doctype html>
   .modal-actions{display:flex;justify-content:flex-end;gap:10px}
   .modal-actions .btn{padding:8px 16px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink)}
   .modal-actions .btn.primary{background:var(--accent);border-color:var(--accent);color:#1d1d1f;font-weight:600}
+  .modal-card select{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-size:14px;margin-bottom:16px}
+  .modal-card select:focus{outline:none;border-color:var(--accent)}
+  .share-item{display:flex;flex-direction:column;padding:12px;border-bottom:1px solid var(--line);gap:6px;color:var(--ink)}
+  .share-item:last-child{border-bottom:none}
+  .share-item .t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:320px;font-size:14px}
+  .share-item .meta-row{display:flex;gap:12px;font-size:11px;color:var(--muted)}
+  .share-item .actions{display:flex;gap:8px;justify-content:flex-end;margin-top:4px}
+  .btn.mini{padding:4px 8px;font-size:12px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink)}
+  .btn.mini.primary{background:var(--accent);border-color:var(--accent);color:#1d1d1f;font-weight:600}
+  .btn.mini.danger:hover{border-color:#d4584a;color:#d4584a}
 </style>
 </head>
 <body>
@@ -642,6 +677,12 @@ const PAGE = `<!doctype html>
     <aside class="sidebar">
       <div class="sb-head">
         <span class="grow">备忘录</span>
+        <button class="icon-btn" id="shareManageBtn" title="分享管理" style="display:inline-flex; align-items:center; justify-content:center;">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+          </svg>
+        </button>
         <button class="icon-btn" id="newBtn" title="新建">+</button>
         <button class="icon-btn" id="logoutBtn" title="退出" style="font-size:15px">退出</button>
       </div>
@@ -696,11 +737,35 @@ const PAGE = `<!doctype html>
   <div id="shareModal" class="modal-overlay">
     <div class="modal-card">
       <h3>分享此备忘录</h3>
-      <p>生成公开链接后，任何人均可只读访问此条备忘录的明文快照。未分享的备忘录保持端到端加密。</p>
-      <input type="text" id="shareUrlInput" readonly>
+      <p>生成只读分享链接。未分享的备忘录保持端到端加密。</p>
+      <div id="shareConfigArea" style="margin-bottom: 16px;">
+        <label for="shareExpireSelect" style="font-size: 13px; color: var(--muted); display: block; margin-bottom: 6px;">有效期限制：</label>
+        <select id="shareExpireSelect">
+          <option value="0">永久</option>
+          <option value="86400">1天</option>
+          <option value="604800">7天</option>
+          <option value="2592000">30天</option>
+        </select>
+      </div>
+      <div id="shareResultArea" style="display:none; margin-bottom: 16px;">
+        <input type="text" id="shareUrlInput" readonly style="margin-bottom:0;">
+      </div>
       <div class="modal-actions">
         <button class="btn" id="closeShareBtn">关闭</button>
-        <button class="btn primary" id="copyShareBtn">复制链接</button>
+        <button class="btn primary" id="shareActionBtn">生成分享链接</button>
+        <button class="btn primary" id="copyShareBtn" style="display:none;">复制链接</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="shareManageModal" class="modal-overlay">
+    <div class="modal-card" style="max-width: 540px; width: 95%;">
+      <h3>管理已分享的备忘录</h3>
+      <div id="shareListContainer" style="max-height: 320px; overflow-y: auto; margin-bottom: 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg);">
+        <!-- 动态载入列表 -->
+      </div>
+      <div class="modal-actions">
+        <button class="btn" id="closeShareManageBtn">关闭</button>
       </div>
     </div>
   </div>
@@ -1013,32 +1078,188 @@ const PAGE = `<!doctype html>
 
   function shareNote() {
     if (currentId === null) return;
-    function proceedShare() {
-      setStatus('准备分享…');
-      var content = sanitize(editor.innerHTML);
-      var titleText = deriveTitle();
-
-      api('/api/share', {
-        method: 'POST',
-        body: JSON.stringify({ title: titleText, content: content })
-      }).then(function(res) {
-        if (res.id) {
-          var shareUrl = window.location.origin + '/s/' + res.id;
-          $('shareUrlInput').value = shareUrl;
-          $('shareModal').classList.add('show');
-          setStatus('分享链接已生成');
-        } else {
-          setStatus('生成分享链接失败: ' + (res.error || '未知错误'));
-        }
-      }).catch(function(err) {
-        setStatus('分享失败: ' + err);
-      });
+    function proceed() {
+      $('shareConfigArea').style.display = 'block';
+      $('shareResultArea').style.display = 'none';
+      $('shareActionBtn').style.display = 'inline-block';
+      $('copyShareBtn').style.display = 'none';
+      $('shareExpireSelect').value = '0';
+      $('shareModal').classList.add('show');
     }
     if (dirty) {
-      saveNote(proceedShare);
+      saveNote(proceed);
     } else {
-      proceedShare();
+      proceed();
     }
+  }
+
+  function executeCreateShare() {
+    var content = sanitize(editor.innerHTML);
+    var titleText = deriveTitle();
+    var expires_in = parseInt($('shareExpireSelect').value, 10);
+
+    setStatus('准备分享…');
+    api('/api/share', {
+      method: 'POST',
+      body: JSON.stringify({ title: titleText, content: content, expires_in: expires_in })
+    }).then(function(res) {
+      if (res.id) {
+        var shareUrl = window.location.origin + '/s/' + res.id;
+        $('shareUrlInput').value = shareUrl;
+        
+        $('shareConfigArea').style.display = 'none';
+        $('shareResultArea').style.display = 'block';
+        $('shareActionBtn').style.display = 'none';
+        $('copyShareBtn').style.display = 'inline-block';
+        
+        setStatus('分享链接已生成');
+      } else {
+        setStatus('生成分享链接失败: ' + (res.error || '未知错误'));
+      }
+    }).catch(function(err) {
+      setStatus('分享失败: ' + err);
+    });
+  }
+
+  function openShareManage() {
+    $('shareManageModal').classList.add('show');
+    loadAndRenderShares();
+  }
+
+  function loadAndRenderShares() {
+    var container = $('shareListContainer');
+    container.innerHTML = '<div style="padding:24px; text-align:center; color:var(--muted);">加载中…</div>';
+    
+    api('/api/shares').then(function(data) {
+      container.innerHTML = '';
+      if (!data || data.length === 0) {
+        container.innerHTML = '<div style="padding:24px; text-align:center; color:var(--muted);">暂无分享的备忘录</div>';
+        return;
+      }
+      
+      data.forEach(function(item) {
+        var itemEl = document.createElement('div');
+        itemEl.className = 'share-item';
+        
+        var titleStr = item.title && item.title.trim() ? item.title : '无标题备忘录';
+        var createdTime = fmt(item.created_at);
+        
+        var isExpired = item.expires_at && item.expires_at < Date.now();
+        var statusText = '';
+        var expiresTime = '';
+        
+        if (item.expires_at) {
+          statusText = isExpired ? '<span style="color:#d4584a; font-weight:600;">已过期</span>' : '<span style="color:#2da44e; font-weight:600;">分享中</span>';
+          expiresTime = fmt(item.expires_at);
+        } else {
+          statusText = '<span style="color:#2da44e; font-weight:600;">分享中</span>';
+          expiresTime = '永久有效';
+        }
+        
+        var shareUrl = window.location.origin + '/s/' + item.id;
+        
+        var extendBtnHtml = item.expires_at 
+          ? '<button class="btn mini primary extend-btn" data-id="' + item.id + '" data-expires="' + item.expires_at + '" style="padding:4px 8px; font-size:12px; border-radius:6px;">延长7天</button>'
+          : '';
+          
+        itemEl.innerHTML = 
+          '<div style="display:flex; justify-content:space-between; align-items:center;">' +
+            '<strong class="t" title="' + escapeAttr(titleStr) + '">' + escapeHtml(titleStr) + '</strong>' +
+            '<span>' + statusText + '</span>' +
+          '</div>' +
+          '<div class="meta-row">' +
+            '<span>创建: ' + createdTime + '</span>' +
+            '<span>到期: ' + expiresTime + '</span>' +
+          '</div>' +
+          '<div class="actions">' +
+            '<button class="btn mini copy-link-btn" data-url="' + escapeAttr(shareUrl) + '" style="padding:4px 8px; font-size:12px; border-radius:6px;">复制链接</button>' +
+            extendBtnHtml +
+            '<button class="btn mini danger cancel-share-btn" data-id="' + item.id + '" style="padding:4px 8px; font-size:12px; border-radius:6px;">取消分享</button>' +
+          '</div>';
+          
+        container.appendChild(itemEl);
+      });
+      
+      Array.prototype.forEach.call(container.querySelectorAll('.copy-link-btn'), function(btn) {
+        btn.onclick = function() {
+          var url = this.getAttribute('data-url');
+          var self = this;
+          function done() {
+            var old = self.textContent;
+            self.textContent = '已复制！';
+            self.disabled = true;
+            setTimeout(function() {
+              self.textContent = old;
+              self.disabled = false;
+            }, 1500);
+          }
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(url).then(done).catch(function() {
+              var ta = document.createElement('textarea');
+              ta.value = url;
+              document.body.appendChild(ta);
+              ta.select();
+              document.execCommand('copy');
+              document.body.removeChild(ta);
+              done();
+            });
+          } else {
+            var ta = document.createElement('textarea');
+            ta.value = url;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            done();
+          }
+        };
+      });
+      
+      Array.prototype.forEach.call(container.querySelectorAll('.extend-btn'), function(btn) {
+        btn.onclick = function() {
+          var id = this.getAttribute('data-id');
+          var currentExpires = parseInt(this.getAttribute('data-expires'), 10);
+          var baseTime = currentExpires < Date.now() ? Date.now() : currentExpires;
+          var newExpires = baseTime + 7 * 24 * 60 * 60 * 1000;
+          
+          var self = this;
+          self.disabled = true;
+          self.textContent = '延长中…';
+          api('/api/shares/' + id + '/extend', {
+            method: 'POST',
+            body: JSON.stringify({ expires_at: newExpires })
+          }).then(function() {
+            loadAndRenderShares();
+          }).catch(function(err) {
+            alert('延长失败: ' + err);
+            self.disabled = false;
+            self.textContent = '延长7天';
+          });
+        };
+      });
+      
+      Array.prototype.forEach.call(container.querySelectorAll('.cancel-share-btn'), function(btn) {
+        btn.onclick = function() {
+          var id = this.getAttribute('data-id');
+          if (!confirm('确定要取消该公开分享吗？链接将即刻失效。')) return;
+          var self = this;
+          self.disabled = true;
+          self.textContent = '取消中…';
+          api('/api/shares/' + id, {
+            method: 'DELETE'
+          }).then(function() {
+            loadAndRenderShares();
+          }).catch(function(err) {
+            alert('取消失败: ' + err);
+            self.disabled = false;
+            self.textContent = '取消分享';
+          });
+        };
+      });
+      
+    }).catch(function(err) {
+      container.innerHTML = '<div style="padding:24px; text-align:center; color:#d4584a;">加载失败: ' + err + '</div>';
+    });
   }
 
   // ---- 富文本（contenteditable + execCommand） ----
@@ -1166,6 +1387,16 @@ const PAGE = `<!doctype html>
     $('shareModal').classList.remove('show');
   };
   $('shareModal').onclick = function(e) {
+    if (e.target === this) {
+      this.classList.remove('show');
+    }
+  };
+  $('shareActionBtn').onclick = executeCreateShare;
+  $('shareManageBtn').onclick = openShareManage;
+  $('closeShareManageBtn').onclick = function() {
+    $('shareManageModal').classList.remove('show');
+  };
+  $('shareManageModal').onclick = function(e) {
     if (e.target === this) {
       this.classList.remove('show');
     }
