@@ -536,6 +536,7 @@ const PAGE = `<!doctype html>
         <button class="fb" id="bClear" title="清除格式">清除</button>
       </div>
       <div class="edit-wrap">
+        <input id="noteTitle" type="text" placeholder="输入标题…" style="width: 100%; border: none; outline: none; font-size: 20px; font-weight: 600; background: transparent; color: var(--ink); margin-bottom: 16px; padding: 0 0 8px 0; border-bottom: 1px solid var(--line);">
         <div id="editor" contenteditable="true" spellcheck="false" data-placeholder="开始输入…"></div>
       </div>
     </section>
@@ -702,8 +703,10 @@ const PAGE = `<!doctype html>
   function escapeAttr(s){ return escapeHtml(s).replace(/"/g,'&quot;'); }
 
   function deriveTitle(){
+    var t = ($('noteTitle').value || '').trim();
+    if (t) return t.slice(0, 80);
     var lines=(editor.innerText||'').split('\\n');
-    for (var i=0;i<lines.length;i++){ var t=lines[i].trim(); if(t) return t.slice(0,80); }
+    for (var i=0;i<lines.length;i++){ var line=lines[i].trim(); if(line) return line.slice(0,80); }
     return '新建备忘';
   }
   function fmt(ts){
@@ -764,10 +767,12 @@ const PAGE = `<!doctype html>
   function openNote(id){
     function load(){
       api('/api/notes/'+id).then(function(note){
+        var titlePromise = note.format === 2 ? decryptData(note.title) : Promise.resolve(note.title || '');
         var contentPromise = note.format === 2 ? decryptData(note.content) : Promise.resolve(note.content || '');
-        contentPromise.then(function(decryptedContent) {
+        Promise.all([titlePromise, contentPromise]).then(function(decrypted) {
           currentId=id; dirty=false;
-          editor.innerHTML=sanitize(decryptedContent); refreshPlaceholder();
+          $('noteTitle').value = decrypted[0];
+          editor.innerHTML=sanitize(decrypted[1]); refreshPlaceholder();
           setStatus('编辑于 '+fmt(note.updated_at)); renderList(); showFmt(true);
           $('app').classList.add('viewing'); editor.focus();
         });
@@ -787,7 +792,9 @@ const PAGE = `<!doctype html>
         });
       }).then(function(n){
         notes.unshift({ id:n.id, title:'', updated_at:n.updated_at, titlePlain:'新建备忘', format: 2 });
-        currentId=n.id; dirty=false; editor.innerHTML=''; refreshPlaceholder();
+        currentId=n.id; dirty=false;
+        $('noteTitle').value = '';
+        editor.innerHTML=''; refreshPlaceholder();
         setStatus('新建'); renderList(); showFmt(true);
         $('app').classList.add('viewing'); editor.focus();
       });
@@ -823,7 +830,9 @@ const PAGE = `<!doctype html>
     var id=currentId;
     api('/api/notes/'+id,{method:'DELETE'}).then(function(){
       notes=notes.filter(function(x){return x.id!==id;});
-      currentId=null; dirty=false; editor.innerHTML=''; refreshPlaceholder();
+      currentId=null; dirty=false;
+      $('noteTitle').value = '';
+      editor.innerHTML=''; refreshPlaceholder();
       setStatus(''); renderList(); showFmt(false); $('app').classList.remove('viewing');
     });
   }
@@ -942,6 +951,7 @@ const PAGE = `<!doctype html>
     }
   });
   editor.addEventListener('input', function(){ dirty=true; setStatus('未保存'); refreshPlaceholder(); });
+  $('noteTitle').addEventListener('input', function(){ dirty=true; setStatus('未保存'); });
 
   $('saveBtn').onclick=function(){ saveNote(); };
   $('delBtn').onclick=deleteNote;
