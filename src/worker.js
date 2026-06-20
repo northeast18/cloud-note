@@ -26,6 +26,11 @@ const enc = new TextEncoder();
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    const proto = request.headers.get('x-forwarded-proto') || 'https';
+    if (proto === 'http' && url.hostname !== 'localhost' && url.hostname !== '127.0.0.1') {
+      url.protocol = 'https:';
+      return Response.redirect(url.toString(), 301);
+    }
     const p = url.pathname, method = request.method;
     try {
       if (method === 'GET' && p === '/') return html(PAGE);
@@ -53,8 +58,20 @@ function timingSafeEqual(a, b) {
   return diff === 0;
 }
 function b64url(bytes) {
-  return btoa(String.fromCharCode.apply(null, bytes))
+  let binary = '';
+  const len = bytes.byteLength || bytes.length;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary)
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function safeAtob(str) {
+  let base64 = String(str || '').replace(/-/g, '+').replace(/_/g, '/');
+  while (base64.length % 4) {
+    base64 += '=';
+  }
+  return atob(base64);
 }
 async function hmac(secret, data) {
   const key = await crypto.subtle.importKey('raw', enc.encode(secret),
@@ -72,7 +89,7 @@ async function verifyToken(env, token) {
   const expected = await hmac(env.SESSION_SECRET, parts[0]);
   if (!timingSafeEqual(parts[1], expected)) return false;
   try {
-    const data = JSON.parse(atob(parts[0].replace(/-/g, '+').replace(/_/g, '/')));
+    const data = JSON.parse(safeAtob(parts[0]));
     return typeof data.exp === 'number' && data.exp > Date.now();
   } catch (e) { return false; }
 }
@@ -84,7 +101,7 @@ function getCookie(request, name) {
 function isAuthed(request, env) { return verifyToken(env, getCookie(request, COOKIE_NAME)); }
 
 function setCookie(token, ttl) {
-  return COOKIE_NAME + '=' + token + '; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=' + ttl;
+  return COOKIE_NAME + '=' + token + '; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=' + ttl;
 }
 function banned(retrySec) {
   return new Response(JSON.stringify({ error: 'too_many_attempts', retry_after: retrySec }), {
@@ -109,7 +126,8 @@ async function handleLogin(request, env) {
 
   const body = await request.json().catch(() => ({}));
   const pw = typeof body.password === 'string' ? body.password : '';
-  const ok = !!env.AUTH_PASSWORD && timingSafeEqual(pw, env.AUTH_PASSWORD);
+  const cleanSecret = (env.AUTH_PASSWORD || '').trim();
+  const ok = !!cleanSecret && (timingSafeEqual(pw, cleanSecret) || timingSafeEqual(pw.trim(), cleanSecret));
 
   if (ok) {
     if (rec) await db.prepare('DELETE FROM login_attempts WHERE ip = ?').bind(ip).run(); // 成功即清零
@@ -161,8 +179,8 @@ async function decStore(env, data, format) {
   if (!format) return data || '';                 // format=0 旧明文，直接返回
   const key = await getKey(env);
   const parts = String(data).split('.');
-  const iv = Uint8Array.from(atob(parts[0].replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
-  const ct = Uint8Array.from(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+  const iv = Uint8Array.from(safeAtob(parts[0]), c => c.charCodeAt(0));
+  const ct = Uint8Array.from(safeAtob(parts[1]), c => c.charCodeAt(0));
   const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
   return new TextDecoder().decode(pt);
 }
@@ -545,34 +563,41 @@ const PAGE = `<!doctype html>
   }
 
   function deriveKey(password) {
-    var enc = new TextEncoder();
-    var passwordBuffer = enc.encode(password);
-    var salt = enc.encode('cloud-note-pbkdf2-salt');
-    return window.crypto.subtle.importKey(
-      'raw',
-      passwordBuffer,
-      { name: 'PBKDF2' },
-      false,
-      ['deriveKey']
-    ).then(function(baseKey) {
-      return window.crypto.subtle.deriveKey(
-        {
-          name: 'PBKDF2',
-          salt: salt,
-          iterations: 100000,
-          hash: 'SHA-256'
-        },
-        baseKey,
-        { name: 'AES-GCM', length: 256 },
-        true,
-        ['encrypt', 'decrypt']
-      );
-    }).then(function(key) {
-      sessionKey = key;
-      return window.crypto.subtle.exportKey('raw', key);
-    }).then(function(raw) {
-      sessionStorage.setItem('session_key', base64urlEncode(raw));
-    });
+    if (!window.crypto || !window.crypto.subtle) {
+      return Promise.reject(new Error('浏览器不支持 Web Crypto API，请确保使用 HTTPS 访问'));
+    }
+    try {
+      var enc = new TextEncoder();
+      var passwordBuffer = enc.encode(password);
+      var salt = enc.encode('cloud-note-pbkdf2-salt');
+      return window.crypto.subtle.importKey(
+        'raw',
+        passwordBuffer,
+        { name: 'PBKDF2' },
+        false,
+        ['deriveKey']
+      ).then(function(baseKey) {
+        return window.crypto.subtle.deriveKey(
+          {
+            name: 'PBKDF2',
+            salt: salt,
+            iterations: 100000,
+            hash: 'SHA-256'
+          },
+          baseKey,
+          { name: 'AES-GCM', length: 256 },
+          true,
+          ['encrypt', 'decrypt']
+        );
+      }).then(function(key) {
+        sessionKey = key;
+        return window.crypto.subtle.exportKey('raw', key);
+      }).then(function(raw) {
+        sessionStorage.setItem('session_key', base64urlEncode(raw));
+      });
+    } catch(e) {
+      return Promise.reject(e);
+    }
   }
 
   function encryptData(text) {
@@ -678,7 +703,7 @@ const PAGE = `<!doctype html>
     var empty=(editor.innerText||'').trim()===''&&editor.querySelectorAll('img').length===0;
     editor.classList.toggle('is-empty', empty);
   }
-  function showLogin(){ $('login').style.display='flex'; $('app').hidden=true; setTimeout(function(){$('pw').focus();},0); }
+  function showLogin(){ $('login').style.display='flex'; $('app').hidden=true; $('loginBtn').disabled=false; setTimeout(function(){$('pw').focus();},0); }
   function showApp(){ $('login').style.display='none'; $('app').hidden=false; }
   function setStatus(s){ $('status').textContent=s||''; }
   function showFmt(on){ $('fmtbar').classList.toggle('show', !!on); }
@@ -700,7 +725,10 @@ const PAGE = `<!doctype html>
         notes = decryptedNotes;
         showApp(); renderList();
       });
-    }).catch(function(){});
+    }).catch(function(err){
+      $('loginBtn').disabled = false;
+      $('loginErr').textContent = '加载失败: ' + (err.message || err);
+    });
   }
   function renderList(){
     var list=$('list'); list.innerHTML='';
@@ -930,7 +958,7 @@ const PAGE = `<!doctype html>
             $('pw').value=''; $('loginBtn').disabled=false; loadNotes();
           }).catch(function(e) {
             $('loginBtn').disabled=false;
-            $('loginErr').textContent='密钥派生错误';
+            $('loginErr').textContent='密钥派生错误: ' + (e.message || e);
           });
           return;
         }
@@ -938,10 +966,16 @@ const PAGE = `<!doctype html>
           $('loginBtn').disabled=false;
           if (res.status===429) $('loginErr').textContent='尝试过多，请约 '+(d.retry_after||60)+' 秒后再试';
           else if (typeof d.remaining==='number') $('loginErr').textContent='密码错误，还可尝试 '+d.remaining+' 次';
-          else $('loginErr').textContent='密码错误';
+          else $('loginErr').textContent=d.error || '密码错误';
+        }).catch(function(){
+          $('loginBtn').disabled=false;
+          $('loginErr').textContent='服务器错误 (状态码 ' + res.status + ')';
         });
       })
-      .catch(function(){ $('loginBtn').disabled=false; $('loginErr').textContent='网络错误'; });
+      .catch(function(err){
+        $('loginBtn').disabled=false;
+        $('loginErr').textContent='网络错误: ' + (err.message || err);
+      });
   }
   $('loginBtn').onclick=doLogin;
   $('pw').addEventListener('keydown', function(e){ if(e.key==='Enter') doLogin(); });

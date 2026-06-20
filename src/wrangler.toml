@@ -1,6 +1,11 @@
 name = "cloud-note"
 main = "worker.js"
 compatibility_date = "2026-06-01"
+workers_dev = true
+
+[[routes]]
+pattern = "note.jishu.cc.cd"
+custom_domain = true
 
 # D1 数据库绑定。binding 必须是 "NOTE_DB"（worker.js 里用的是 env.NOTE_DB）。
 # database_id 先留空占位，执行 `wrangler d1 create` 后把输出的 id 粘进来。
