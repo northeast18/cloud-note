@@ -589,10 +589,10 @@ const PAGE = `<!doctype html>
   .search{margin:10px 12px;padding:8px 11px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--ink);font-size:14px}
   .search:focus{outline:none;border-color:var(--accent)}
   .list{flex:1;overflow:auto}
-  .item{padding:12px 14px;border-bottom:1px solid var(--line);cursor:pointer}
+  .item{padding:6px 12px;border-bottom:1px solid var(--line);cursor:pointer}
   .item:hover{background:var(--bg)}.item.active{background:var(--sel)}
-  .item .t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .item .d{font-size:12px;color:var(--muted);margin-top:3px}
+  .item .t{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .item .d{font-size:11px;color:var(--muted);margin-top:1px}
   .empty-list{padding:24px 14px;color:var(--muted);font-size:13px}
   .main{flex:1;display:flex;flex-direction:column;min-width:0}
   .toolbar{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line)}
