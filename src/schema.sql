@@ -2,10 +2,14 @@
 CREATE TABLE IF NOT EXISTS notes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL DEFAULT '',      -- 列表标题（从正文首行派生）
-  content TEXT NOT NULL DEFAULT '',    -- 富文本 HTML
-  format INTEGER NOT NULL DEFAULT 0,   -- 0=明文，1=以后启用加密时的密文
-  updated_at INTEGER NOT NULL          -- 毫秒时间戳
+  content TEXT NOT NULL DEFAULT '',    -- 富文本 HTML 或 Markdown 内容
+  format INTEGER NOT NULL DEFAULT 0,   -- 0=明文，1=服务端密文，2=客户端E2EE密文
+  kind INTEGER NOT NULL DEFAULT 0,     -- 0=富文本，1=Markdown
+  updated_at INTEGER NOT NULL,         -- 毫秒时间戳
+  deleted_at INTEGER DEFAULT NULL      -- 软删除时间戳（NULL为未删除，有值为回收站）
 );
+
+CREATE INDEX IF NOT EXISTS idx_notes_deleted_at ON notes(deleted_at);
 
 -- 登录防爆破：按 IP 记录失败次数与封禁截止时间
 CREATE TABLE IF NOT EXISTS login_attempts (
