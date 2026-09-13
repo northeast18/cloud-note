@@ -33,7 +33,7 @@ export default {
     }
     const p = url.pathname, method = request.method;
     try {
-      if (method === 'GET' && p === '/') return html(PAGE);
+      if ((method === 'GET' || method === 'HEAD') && p === '/') return html(PAGE);
       if (p === '/api/login' && method === 'POST') return handleLogin(request, env);
       if (p === '/api/logout' && method === 'POST') return handleLogout();
       if (p.startsWith('/uploads/') && method === 'GET') return serveUpload(request, env, url);
