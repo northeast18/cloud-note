@@ -695,13 +695,14 @@ const PAGE = `<!doctype html>
   :root{--bg:#f4f4f6;--panel:#fff;--ink:#1d1d1f;--muted:#8a8a8f;--line:#e6e6ea;--sel:#fbf2dd;--accent:#c8932f;--code-bg:#f0f0f3}
   @media (prefers-color-scheme:dark){:root{--bg:#1a1a1c;--panel:#232326;--ink:#ededef;--muted:#8d8d93;--line:#34343a;--sel:#3a3220;--accent:#e0b25a;--code-bg:#2b2b30}}
   *{box-sizing:border-box}html,body{height:100%;margin:0}
+  [hidden]{display:none !important}
   body{font:15px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",Segoe UI,sans-serif;color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased}
   button{font:inherit;cursor:pointer}
   #login{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:24px}
   #login .card{width:100%;max-width:320px;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:28px 24px;box-shadow:0 8px 30px rgba(0,0,0,.06)}
   #login h1{margin:0 0 4px;font-size:20px;font-weight:600}
   #login p{margin:0 0 18px;color:var(--muted);font-size:13px}
-  #login input{width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink);font-size:15px}
+  #login input{width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink);font-size:16px}
   #login input:focus{outline:none;border-color:var(--accent)}
   #login #loginBtn{width:100%;margin-top:14px;padding:11px;border:none;border-radius:10px;background:var(--accent);color:#1d1d1f;font-weight:600}
   #login #loginBtn:disabled{opacity:.5;cursor:not-allowed}
@@ -805,14 +806,16 @@ const PAGE = `<!doctype html>
   .btn.mini.primary{background:var(--accent);border-color:var(--accent);color:#1d1d1f;font-weight:600}
   .btn.mini.danger:hover{border-color:#d4584a;color:#d4584a}
   /* 更多下拉菜单 */
-  .more-dropdown{position:absolute;right:0;top:calc(100% + 4px);width:175px;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.16);z-index:200;padding:6px;display:flex;flex-direction:column;gap:2px}
+  .more-dropdown{position:absolute;right:0;top:calc(100% + 4px);width:175px;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.16);z-index:200;padding:6px;display:none;flex-direction:column;gap:2px}
+  .more-dropdown.show{display:flex}
   .more-item{width:100%;text-align:left;padding:8px 10px;border:none;background:transparent;color:var(--ink);border-radius:7px;font-size:13px;display:flex;align-items:center;gap:8px;cursor:pointer;transition:background .12s}
   .more-item:hover{background:var(--bg)}
   .more-item.danger{color:#d4584a}
   .more-item.danger:hover{background:rgba(212,88,74,0.1)}
   .more-sep{height:1px;background:var(--line);margin:4px 2px}
   /* 自研弹窗组件 */
-  .dlg-mask{position:fixed;inset:0;background:rgba(0,0,0,0.45);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:20px;z-index:1100}
+  .dlg-mask{position:fixed;inset:0;background:rgba(0,0,0,0.45);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);display:none;align-items:center;justify-content:center;padding:20px;z-index:1100}
+  .dlg-mask.show{display:flex}
   .dlg-card{width:100%;max-width:360px;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:22px 20px 18px;box-shadow:0 12px 40px rgba(0,0,0,0.22);animation:dlgpop .15s ease-out;color:var(--ink)}
   @keyframes dlgpop{from{transform:translateY(8px) scale(.96);opacity:0}to{transform:none;opacity:1}}
   .dlg-title{font-size:16px;font-weight:600;margin-bottom:8px}
@@ -1113,23 +1116,27 @@ const PAGE = `<!doctype html>
       dlgResolve = resolve;
       var hasTitle = !!opts.title;
       $('dlgTitle').textContent = opts.title || '';
-      $('dlgTitle').hidden = !hasTitle;
+      $('dlgTitle').style.display = hasTitle ? 'block' : 'none';
       $('dlgMsg').textContent = opts.msg || '';
       var withInput = !!opts.input;
-      $('dlgInput').hidden = !withInput;
+      $('dlgInput').style.display = withInput ? 'block' : 'none';
       if (withInput) {
         $('dlgInput').value = opts.value || '';
         $('dlgInput').placeholder = opts.placeholder || '';
       }
-      $('dlgCancel').hidden = !opts.cancel;
+      $('dlgCancel').style.display = opts.cancel ? 'inline-block' : 'none';
       $('dlgOk').textContent = opts.okText || '确定';
       $('dlgCancel').textContent = opts.cancelText || '取消';
       $('dlgOk').className = 'dlg-btn primary' + (opts.danger ? ' danger' : '');
+      $('dlg').classList.add('show');
+      $('dlg').style.display = 'flex';
       $('dlg').hidden = false;
       setTimeout(function(){ (withInput ? $('dlgInput') : $('dlgOk')).focus(); }, 30);
     });
   }
   function closeDlg(result) {
+    $('dlg').classList.remove('show');
+    $('dlg').style.display = 'none';
     $('dlg').hidden = true;
     var r = dlgResolve;
     dlgResolve = null;
@@ -1143,15 +1150,25 @@ const PAGE = `<!doctype html>
   function uiPrompt(msg, value, title) {
     return openDlg({ msg: msg, title: title, input: true, value: value, cancel: true }).then(function(r){ return r; });
   }
-  $('dlgOk').onclick = function(){ closeDlg($('dlgInput').hidden ? true : $('dlgInput').value); };
+  $('dlgOk').onclick = function(){ closeDlg($('dlgInput').style.display === 'none' ? true : $('dlgInput').value); };
   $('dlgCancel').onclick = function(){ closeDlg(null); };
   $('dlg').addEventListener('mousedown', function(e){ if (e.target === $('dlg')) closeDlg(null); });
   $('dlgInput').addEventListener('keydown', function(e){ if (e.key === 'Enter'){ e.preventDefault(); $('dlgOk').click(); } });
-  document.addEventListener('keydown', function(e){ if (!$('dlg').hidden && e.key === 'Escape') closeDlg(null); });
+  document.addEventListener('keydown', function(e){ if ($('dlg').classList.contains('show') && e.key === 'Escape') closeDlg(null); });
 
   // ---- 更多功能菜单 ----
-  function closeMore() { $('moreMenu').hidden = true; }
-  $('moreBtn').onclick = function(e){ e.stopPropagation(); $('moreMenu').hidden = !$('moreMenu').hidden; };
+  function closeMore() {
+    $('moreMenu').classList.remove('show');
+    $('moreMenu').style.display = 'none';
+    $('moreMenu').hidden = true;
+  }
+  $('moreBtn').onclick = function(e){
+    e.stopPropagation();
+    var m = $('moreMenu');
+    var isShown = m.classList.toggle('show');
+    m.style.display = isShown ? 'flex' : 'none';
+    m.hidden = !isShown;
+  };
   document.addEventListener('click', closeMore);
 
   // ---- 偏好设置弹窗 ----
