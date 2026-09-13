@@ -21,5 +21,8 @@ CREATE TABLE IF NOT EXISTS shared_notes (
   title TEXT NOT NULL,               -- 明文标题快照
   content TEXT NOT NULL,             -- 明文 HTML 正文快照
   created_at INTEGER NOT NULL,       -- 创建时间戳
-  expires_at INTEGER                 -- 过期时间戳（可空）
+  expires_at INTEGER,                -- 过期时间戳（可空）
+  note_id INTEGER                    -- 关联的原始笔记 ID（可空）
 );
+
+CREATE INDEX IF NOT EXISTS idx_shared_notes_note_id ON shared_notes(note_id);

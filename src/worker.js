@@ -318,11 +318,31 @@ function generateShortId() {
   return result;
 }
 
+let checkedNoteIdCol = false;
+async function ensureSharedNotesSchema(db) {
+  if (checkedNoteIdCol) return;
+  try {
+    const info = await db.prepare("PRAGMA table_info(shared_notes)").all();
+    const cols = (info.results || []).map(c => c.name);
+    if (cols.length > 0 && !cols.includes('note_id')) {
+      await db.prepare("ALTER TABLE shared_notes ADD COLUMN note_id INTEGER").run();
+      try {
+        await db.prepare("CREATE INDEX IF NOT EXISTS idx_shared_notes_note_id ON shared_notes(note_id)").run();
+      } catch (_) {}
+    }
+    checkedNoteIdCol = true;
+  } catch (e) {
+    console.error("Schema migration check error:", e);
+  }
+}
+
 async function handleCreateShare(request, env) {
   const db = env.NOTE_DB;
+  await ensureSharedNotesSchema(db);
   const body = await request.json().catch(() => ({}));
   const title = typeof body.title === 'string' ? body.title : '';
   const content = typeof body.content === 'string' ? body.content : '';
+  const noteId = typeof body.note_id === 'number' ? body.note_id : null;
   const expiresIn = typeof body.expires_in === 'number' ? body.expires_in : null;
   const expiresAt = expiresIn ? Date.now() + expiresIn * 1000 : null;
   
@@ -337,9 +357,15 @@ async function handleCreateShare(request, env) {
   for (let attempt = 0; attempt < 5; attempt++) {
     id = generateShortId();
     try {
-      await db.prepare(
-        'INSERT INTO shared_notes (id, title, content, created_at, expires_at) VALUES (?, ?, ?, ?, ?)'
-      ).bind(id, title, cleanContent, Date.now(), expiresAt).run();
+      try {
+        await db.prepare(
+          'INSERT INTO shared_notes (id, title, content, created_at, expires_at, note_id) VALUES (?, ?, ?, ?, ?, ?)'
+        ).bind(id, title, cleanContent, Date.now(), expiresAt, noteId).run();
+      } catch (insertErr) {
+        await db.prepare(
+          'INSERT INTO shared_notes (id, title, content, created_at, expires_at) VALUES (?, ?, ?, ?, ?)'
+        ).bind(id, title, cleanContent, Date.now(), expiresAt).run();
+      }
       success = true;
       break;
     } catch (e) {
@@ -390,19 +416,25 @@ const SHARE_PAGE_TEMPLATE = `<!doctype html>
 <style>
   :root{--bg:#f4f4f6;--panel:#fff;--ink:#1d1d1f;--muted:#8a8a8f;--line:#e6e6ea;--accent:#c8932f;--code-bg:#f0f0f3}
   @media (prefers-color-scheme:dark){:root{--bg:#1a1a1c;--panel:#232326;--ink:#ededef;--muted:#8d8d93;--line:#34343a;--accent:#e0b25a;--code-bg:#2b2b30}}
-  *{box-sizing:border-box}html,body{height:100%;margin:0}
+  *{box-sizing:border-box}html,body{min-height:100%;margin:0;overflow-x:hidden}
   body{font:16px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",Segoe UI,sans-serif;color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased;display:flex;flex-direction:column;align-items:center;padding:24px 16px}
-  .container{width:100%;max-width:680px;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:32px 28px;box-shadow:0 8px 30px rgba(0,0,0,.04);margin-top:20px}
-  h1{margin:0 0 16px 0;font-size:24px;font-weight:700;border-bottom:1px solid var(--line);padding-bottom:12px}
-  .meta{font-size:13px;color:var(--muted);margin-bottom:24px;display:flex;gap:12px}
-  .content{outline:none}
-  .content img{max-width:100%;border-radius:6px;margin:8px 0}
-  .content a{color:var(--accent);text-decoration:none}
+  .container{width:100%;max-width:680px;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:32px 28px;box-shadow:0 8px 30px rgba(0,0,0,.04);margin-top:20px;min-width:0;overflow-wrap:anywhere;word-break:break-word}
+  h1{margin:0 0 16px 0;font-size:24px;font-weight:700;border-bottom:1px solid var(--line);padding-bottom:12px;overflow-wrap:anywhere;word-break:break-word}
+  .meta{font-size:13px;color:var(--muted);margin-bottom:24px;display:flex;gap:12px;flex-wrap:wrap}
+  .content{outline:none;line-height:1.7;overflow-wrap:anywhere;word-break:break-word}
+  .content p, .content div, .content span{overflow-wrap:anywhere;word-break:break-word}
+  .content img{max-width:100%;border-radius:6px;margin:8px 0;height:auto}
+  .content a{color:var(--accent);text-decoration:none;overflow-wrap:anywhere;word-break:break-all}
   .content a:hover{text-decoration:underline}
-  .content code{background:var(--code-bg);padding:2px 5px;border-radius:5px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.92em}
-  .content pre{background:var(--code-bg);padding:12px 14px;border-radius:9px;overflow:auto;margin:12px 0}
-  .content pre code{background:none;padding:0}
+  .content code{background:var(--code-bg);padding:2px 5px;border-radius:5px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.92em;overflow-wrap:anywhere;word-break:break-all}
+  .content pre{background:var(--code-bg);padding:12px 14px;border-radius:9px;overflow-x:auto;margin:12px 0;max-width:100%;white-space:pre-wrap;word-break:break-all}
+  .content pre code{background:none;padding:0;white-space:pre-wrap;word-break:break-all}
   .footer{margin-top:40px;margin-bottom:20px;font-size:12px;color:var(--muted);text-align:center}
+  @media (max-width:600px){
+    body{padding:16px 12px}
+    .container{padding:20px 16px;margin-top:10px;border-radius:12px}
+    h1{font-size:20px}
+  }
 </style>
 </head>
 <body>
@@ -444,17 +476,50 @@ async function handleApi(request, env, url) {
   }
 
   if (p === '/api/shares' && method === 'GET') {
-    const r = await db.prepare(
-      'SELECT id, title, created_at, expires_at FROM shared_notes ORDER BY created_at DESC'
-    ).all();
+    await ensureSharedNotesSchema(db);
+    let r;
+    try {
+      r = await db.prepare(
+        'SELECT id, title, created_at, expires_at, note_id FROM shared_notes ORDER BY created_at DESC'
+      ).all();
+    } catch (e) {
+      r = await db.prepare(
+        'SELECT id, title, created_at, expires_at FROM shared_notes ORDER BY created_at DESC'
+      ).all();
+    }
     return json(r.results || []);
   }
 
-  const mShareDel = p.match(/^\/api\/shares\/([A-Za-z0-9]+)$/);
-  if (mShareDel && method === 'DELETE') {
-    const shareId = mShareDel[1];
-    await db.prepare('DELETE FROM shared_notes WHERE id = ?').bind(shareId).run();
-    return json({ ok: true });
+  const mShareDetail = p.match(/^\/api\/shares\/([A-Za-z0-9]+)$/);
+  if (mShareDetail) {
+    const shareId = mShareDetail[1];
+    if (method === 'GET') {
+      await ensureSharedNotesSchema(db);
+      let row;
+      try {
+        row = await db.prepare(
+          'SELECT id, title, content, created_at, expires_at, note_id FROM shared_notes WHERE id = ?'
+        ).bind(shareId).first();
+      } catch (e) {
+        row = await db.prepare(
+          'SELECT id, title, content, created_at, expires_at FROM shared_notes WHERE id = ?'
+        ).bind(shareId).first();
+      }
+      if (!row) return json({ error: 'Share not found' }, 404);
+      return json(row);
+    }
+    if (method === 'PUT') {
+      const body = await request.json().catch(() => ({}));
+      const title = typeof body.title === 'string' ? body.title : '';
+      const content = typeof body.content === 'string' ? body.content : '';
+      const cleanContent = await sanitizeHtmlOnServer(content);
+      await db.prepare('UPDATE shared_notes SET title = ?, content = ? WHERE id = ?').bind(title, cleanContent, shareId).run();
+      return json({ ok: true });
+    }
+    if (method === 'DELETE') {
+      await db.prepare('DELETE FROM shared_notes WHERE id = ?').bind(shareId).run();
+      return json({ ok: true });
+    }
   }
 
   const mShareExtend = p.match(/^\/api\/shares\/([A-Za-z0-9]+)\/extend$/);
@@ -505,7 +570,7 @@ async function handleApi(request, env, url) {
 
   const m = p.match(/^\/api\/notes\/(\d+)$/);
   if (m) {
-    const id = Number(m[1]);
+    const id = parseInt(m[1], 10);
     if (method === 'GET') {
       const row = await db.prepare(
         'SELECT id, title, content, format, updated_at FROM notes WHERE id = ?').bind(id).first();
@@ -516,14 +581,14 @@ async function handleApi(request, env, url) {
         title: isFormat1 ? await decStore(env, row.title, row.format) : row.title,
         content: isFormat1 ? await decStore(env, row.content, row.format) : row.content,
         format: row.format,
-        updated_at: row.updated_at });
+        updated_at: row.updated_at,
+      });
     }
     if (method === 'PUT') {
       const b = await request.json().catch(() => ({}));
       const title = typeof b.title === 'string' ? b.title.slice(0, 2000) : '';
       let content = typeof b.content === 'string' ? b.content : '';
       const format = typeof b.format === 'number' ? b.format : 0;
-      
       let finalTitle, finalContent, finalFormat;
       if (format === 2) {
         finalTitle = title;
@@ -545,6 +610,9 @@ async function handleApi(request, env, url) {
     }
     if (method === 'DELETE') {
       await db.prepare('DELETE FROM notes WHERE id = ?').bind(id).run();
+      try {
+        await db.prepare('DELETE FROM shared_notes WHERE note_id = ?').bind(id).run();
+      } catch (_) {}
       return json({ ok: true });
     }
   }
@@ -588,18 +656,29 @@ const PAGE = `<!doctype html>
   .icon-btn:hover{background:var(--bg);color:var(--ink)}
   .search{margin:10px 12px;padding:8px 11px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--ink);font-size:14px}
   .search:focus{outline:none;border-color:var(--accent)}
+  .filter-tabs{display:flex;padding:0 12px 10px;gap:6px;border-bottom:1px solid var(--line)}
+  .filter-tab{flex:1;padding:6px 4px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--muted);font-size:12px;font-weight:500;text-align:center;cursor:pointer;transition:all .15s;outline:none}
+  .filter-tab:hover{color:var(--ink);background:var(--panel)}
+  .filter-tab.active{background:var(--panel);color:var(--ink);border-color:var(--accent);font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,0.05)}
   .list{flex:1;overflow:auto}
   .item{padding:6px 12px;border-bottom:1px solid var(--line);cursor:pointer}
   .item:hover{background:var(--bg)}.item.active{background:var(--sel)}
-  .item .t{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .item .d{font-size:11px;color:var(--muted);margin-top:1px}
-  .empty-list{padding:24px 14px;color:var(--muted);font-size:13px}
+  .item .t-wrap{display:flex;align-items:center;justify-content:space-between;gap:6px}
+  .item .t{flex:1;min-width:0;font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .badge-share{display:inline-flex;align-items:center;font-size:10px;line-height:1;padding:3px 6px;border-radius:4px;background:rgba(45,164,78,0.12);color:#2da44e;font-weight:600;flex-shrink:0}
+  .badge-share.expired{background:rgba(212,88,74,0.12);color:#d4584a}
+  .item .d{font-size:11px;color:var(--muted);margin-top:2px}
+  .empty-list{padding:24px 14px;color:var(--muted);font-size:13px;line-height:1.6}
   .main{flex:1;display:flex;flex-direction:column;min-width:0}
   .toolbar{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line)}
   .toolbar .back{display:none}.toolbar .status{flex:1;color:var(--muted);font-size:13px}
   .toolbar .btn{padding:7px 14px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--ink)}
   .toolbar .btn.primary{background:var(--accent);border-color:var(--accent);color:#1d1d1f;font-weight:600}
   .toolbar .btn.danger:hover{border-color:#d4584a;color:#d4584a}
+  .share-banner{display:none;align-items:center;justify-content:space-between;gap:8px;padding:8px 16px;background:rgba(200,147,47,0.09);border-bottom:1px solid rgba(200,147,47,0.22);font-size:12px;color:var(--ink);flex-wrap:wrap}
+  .share-banner.show{display:flex}
+  .share-banner .info{display:flex;align-items:center;gap:6px;flex:1;min-width:180px}
+  .share-banner .actions{display:flex;align-items:center;gap:6px}
   .fmtbar{display:none;flex-wrap:wrap;align-items:center;gap:6px;padding:8px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
   .fmtbar.show{display:flex}
   .fmtbar select,.fmtbar input[type=color]{height:30px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink);padding:0 6px}
@@ -608,17 +687,19 @@ const PAGE = `<!doctype html>
   .fmtbar .fb:hover{background:var(--bg)}
   .fmtbar .sep{width:1px;height:20px;background:var(--line);margin:0 2px}
   .edit-wrap{flex:1;overflow:auto;padding:22px clamp(16px,5vw,48px)}
-  #editor{min-height:100%;outline:none;font:16px/1.7 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",Segoe UI,sans-serif;color:var(--ink)}
+  #noteTitle{overflow-wrap:anywhere;word-break:break-word}
+  #editor{min-height:100%;outline:none;font:16px/1.7 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",Segoe UI,sans-serif;color:var(--ink);overflow-wrap:anywhere;word-break:break-word}
   #editor.is-empty:before{content:attr(data-placeholder);color:var(--muted);pointer-events:none}
   #editor img{max-width:100%;border-radius:6px}
-  #editor a{color:var(--accent)}
-  #editor code{background:var(--code-bg);padding:1px 5px;border-radius:5px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.92em}
-  #editor pre{background:var(--code-bg);padding:12px 14px;border-radius:9px;overflow:auto}
-  #editor pre code{background:none;padding:0}
+  #editor a{color:var(--accent);overflow-wrap:anywhere;word-break:break-all}
+  #editor code{background:var(--code-bg);padding:1px 5px;border-radius:5px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.92em;overflow-wrap:anywhere;word-break:break-all}
+  #editor pre{background:var(--code-bg);padding:12px 14px;border-radius:9px;overflow:auto;white-space:pre-wrap;word-break:break-all}
+  #editor pre code{background:none;padding:0;white-space:pre-wrap;word-break:break-all}
   @media (max-width:720px){.sidebar{flex-basis:100%;width:100%}.main{display:none}#app.viewing .sidebar{display:none}#app.viewing .main{display:flex}.toolbar .back{display:inline-block}}
   .main.empty .edit-wrap,
   .main.empty .toolbar,
-  .main.empty .fmtbar {
+  .main.empty .fmtbar,
+  .main.empty .share-banner {
     display: none !important;
   }
   .main.empty::after {
@@ -643,12 +724,12 @@ const PAGE = `<!doctype html>
   .modal-actions .btn.primary{background:var(--accent);border-color:var(--accent);color:#1d1d1f;font-weight:600}
   .modal-card select{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-size:14px;margin-bottom:16px}
   .modal-card select:focus{outline:none;border-color:var(--accent)}
-  .share-item{display:flex;flex-direction:column;padding:6px 12px;border-bottom:1px solid var(--line);gap:3px;color:var(--ink)}
+  .share-item{display:flex;flex-direction:column;padding:8px 12px;border-bottom:1px solid var(--line);gap:4px;color:var(--ink)}
   .share-item:last-child{border-bottom:none}
   .share-item .t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:320px;font-size:13px}
-  .share-item .meta-row{display:flex;gap:12px;font-size:10px;color:var(--muted)}
-  .share-item .actions{display:flex;gap:8px;justify-content:flex-end;margin-top:2px}
-  .btn.mini{padding:2px 8px;font-size:11px;border-radius:5px;border:1px solid var(--line);background:var(--panel);color:var(--ink)}
+  .share-item .meta-row{display:flex;gap:12px;font-size:11px;color:var(--muted);flex-wrap:wrap}
+  .share-item .actions{display:flex;gap:6px;justify-content:flex-end;margin-top:2px}
+  .btn.mini{padding:3px 8px;font-size:11px;border-radius:5px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
   .btn.mini.primary{background:var(--accent);border-color:var(--accent);color:#1d1d1f;font-weight:600}
   .btn.mini.danger:hover{border-color:#d4584a;color:#d4584a}
 </style>
@@ -677,7 +758,7 @@ const PAGE = `<!doctype html>
     <aside class="sidebar">
       <div class="sb-head">
         <span class="grow">备忘录</span>
-        <button class="icon-btn" id="shareManageBtn" title="分享管理" style="display:inline-flex; align-items:center; justify-content:center;">
+        <button class="icon-btn" id="shareManageBtn" title="已分享列表" style="display:inline-flex; align-items:center; justify-content:center;">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
             <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
@@ -687,6 +768,10 @@ const PAGE = `<!doctype html>
         <button class="icon-btn" id="logoutBtn" title="退出" style="font-size:15px">退出</button>
       </div>
       <input class="search" id="search" placeholder="搜索标题…">
+      <div class="filter-tabs" id="filterTabs">
+        <button class="filter-tab active" id="tabAll" type="button">全部 (0)</button>
+        <button class="filter-tab" id="tabShared" type="button">已分享 (0)</button>
+      </div>
       <div class="list" id="list"></div>
     </aside>
     <section class="main">
@@ -696,6 +781,20 @@ const PAGE = `<!doctype html>
         <button class="btn" id="shareBtn">分享</button>
         <button class="btn danger" id="delBtn">删除</button>
         <button class="btn primary" id="saveBtn">保存</button>
+      </div>
+      <div class="share-banner" id="shareBanner">
+        <div class="info">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+          </svg>
+          <span id="shareBannerText">已公开分享</span>
+        </div>
+        <div class="actions">
+          <button class="btn mini" id="sbCopyBtn" type="button">复制链接</button>
+          <button class="btn mini primary" id="sbExtendBtn" type="button">管理分享</button>
+          <button class="btn mini danger" id="sbCancelBtn" type="button">取消分享</button>
+        </div>
       </div>
       <div class="fmtbar" id="fmtbar">
         <select id="fFont" title="字体">
@@ -736,8 +835,27 @@ const PAGE = `<!doctype html>
 
   <div id="shareModal" class="modal-overlay">
     <div class="modal-card">
-      <h3>分享此备忘录</h3>
-      <p>生成只读分享链接。未分享的备忘录保持端到端加密。</p>
+      <h3 id="shareModalTitle">分享此备忘录</h3>
+      <p id="shareModalDesc">生成只读分享链接。未分享的备忘录保持端到端加密。</p>
+      
+      <!-- 已有分享管理区域 -->
+      <div id="shareExistingArea" style="display:none; margin-bottom: 16px;">
+        <div style="font-size: 13px; color: var(--muted); margin-bottom: 6px;">分享链接：</div>
+        <div style="display:flex; gap:6px; margin-bottom: 12px;">
+          <input type="text" id="shareExistingUrlInput" readonly style="margin-bottom:0; flex:1;">
+          <button class="btn" id="shareExistingCopyBtn" type="button" style="white-space:nowrap;">复制</button>
+        </div>
+        <div id="shareExistingStatus" style="font-size: 13px; margin-bottom: 12px; color: var(--muted);"></div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom: 8px;">
+          <button class="btn mini primary" id="shareQuickExtend7Btn" type="button">+7天</button>
+          <button class="btn mini primary" id="shareQuickExtend30Btn" type="button">+30天</button>
+          <button class="btn mini" id="shareQuickExtendForeverBtn" type="button">设为永久</button>
+          <button class="btn mini" id="shareSyncContentBtn" type="button">更新分享内容</button>
+          <button class="btn mini danger" id="shareExistingCancelBtn" type="button">取消分享</button>
+        </div>
+      </div>
+
+      <!-- 新建分享配置区域 -->
       <div id="shareConfigArea" style="margin-bottom: 16px;">
         <label for="shareExpireSelect" style="font-size: 13px; color: var(--muted); display: block; margin-bottom: 6px;">有效期限制：</label>
         <select id="shareExpireSelect">
@@ -776,7 +894,7 @@ const PAGE = `<!doctype html>
 
 <script>
 (function(){
-  var notes = [], currentId = null, dirty = false, query = '', savedRange = null;
+  var notes = [], shares = [], currentTab = 'all', currentId = null, currentSnapshotShareId = null, dirty = false, query = '', savedRange = null;
   var editor = document.getElementById('editor');
   var $ = function(id){ return document.getElementById(id); };
   var sessionKey = null;
@@ -978,16 +1096,125 @@ const PAGE = `<!doctype html>
       });
       Promise.all(promises).then(function(decryptedNotes) {
         notes = decryptedNotes;
-        showApp(); renderList(); updateEditorState();
+        showApp();
+        loadShares(true);
+        updateEditorState();
       });
     }).catch(function(err){
       $('loginBtn').disabled = false;
       $('loginErr').textContent = '加载失败: ' + (err.message || err);
     });
   }
+
+  function loadShares(andRender){
+    return api('/api/shares').then(function(data){
+      shares = Array.isArray(data) ? data : [];
+      updateTabCounts();
+      if (andRender) renderList();
+      updateShareBanner();
+      return shares;
+    }).catch(function(err){
+      console.error('加载分享列表失败:', err);
+    });
+  }
+
+  function updateTabCounts(){
+    var tabAll = $('tabAll'), tabShared = $('tabShared');
+    if (tabAll) tabAll.textContent = '全部 (' + notes.length + ')';
+    if (tabShared) tabShared.textContent = '已分享 (' + shares.length + ')';
+  }
+
+  function getShareForNote(noteId, titlePlain) {
+    if (!shares || !shares.length) return null;
+    var found = null;
+    if (noteId !== null && noteId !== undefined) {
+      found = shares.find(function(s){ return s.note_id === noteId; });
+    }
+    if (!found && titlePlain) {
+      found = shares.find(function(s){ return !s.note_id && s.title === titlePlain; });
+    }
+    return found;
+  }
+
   function renderList(){
     var list=$('list'); list.innerHTML='';
     var q=query.trim().toLowerCase();
+    updateTabCounts();
+
+    if (currentTab === 'shared') {
+      var shownShares = shares.filter(function(s){
+        return !q || (s.title || '').toLowerCase().indexOf(q) >= 0;
+      });
+      if (!shownShares.length) {
+        var e = document.createElement('div'); e.className = 'empty-list';
+        e.textContent = q ? '没有匹配的已分享备忘录' : '暂无已分享的备忘录。在编辑时点击“分享”即可生成公开链接。';
+        list.appendChild(e); return;
+      }
+      shownShares.forEach(function(s){
+        var isExpired = s.expires_at && s.expires_at < Date.now();
+        var isSelected = (s.note_id && s.note_id === currentId) || (currentSnapshotShareId === s.id);
+        var item = document.createElement('div');
+        item.className = 'item' + (isSelected ? ' active' : '');
+
+        var tWrap = document.createElement('div'); tWrap.className = 't-wrap';
+        var t = document.createElement('div'); t.className = 't';
+        var titleStr = (s.title && s.title.trim()) ? s.title : '无标题备忘录';
+        t.textContent = titleStr;
+        t.title = titleStr;
+        var badge = document.createElement('span');
+        badge.className = 'badge-share' + (isExpired ? ' expired' : '');
+        badge.textContent = isExpired ? '已过期' : '分享中';
+        tWrap.appendChild(t);
+        tWrap.appendChild(badge);
+
+        var d = document.createElement('div'); d.className = 'd';
+        var expStr = s.expires_at ? ('到期: ' + fmt(s.expires_at)) : '到期: 永久有效';
+        d.textContent = '分享于 ' + fmt(s.created_at) + ' · ' + expStr;
+
+        var actRow = document.createElement('div'); actRow.className = 'actions';
+        actRow.style.cssText = 'display:flex; gap:6px; margin-top:6px; justify-content:flex-end;';
+
+        var copyBtn = document.createElement('button');
+        copyBtn.className = 'btn mini';
+        copyBtn.textContent = '复制链接';
+        copyBtn.onclick = function(ev){
+          ev.stopPropagation();
+          copyShareUrl(s.id, copyBtn);
+        };
+
+        var extBtn = document.createElement('button');
+        extBtn.className = 'btn mini primary';
+        extBtn.textContent = '延长7天';
+        extBtn.onclick = function(ev){
+          ev.stopPropagation();
+          extendShare(s.id, s.expires_at, 7 * 86400, extBtn);
+        };
+
+        var cancelBtn = document.createElement('button');
+        cancelBtn.className = 'btn mini danger';
+        cancelBtn.textContent = '取消分享';
+        cancelBtn.onclick = function(ev){
+          ev.stopPropagation();
+          cancelShare(s.id, s.title);
+        };
+
+        actRow.appendChild(copyBtn);
+        actRow.appendChild(extBtn);
+        actRow.appendChild(cancelBtn);
+
+        item.appendChild(tWrap);
+        item.appendChild(d);
+        item.appendChild(actRow);
+
+        item.onclick = function(){
+          openShareItem(s);
+        };
+        list.appendChild(item);
+      });
+      return;
+    }
+
+    // Default: 'all' tab
     var shown=notes.filter(function(n){ return !q||(n.titlePlain||'').toLowerCase().indexOf(q)>=0; });
     if (!shown.length){
       var e=document.createElement('div'); e.className='empty-list';
@@ -996,15 +1223,32 @@ const PAGE = `<!doctype html>
     }
     shown.forEach(function(n){
       var item=document.createElement('div'); item.className='item'+(n.id===currentId?' active':'');
-      var t=document.createElement('div'); t.className='t'; t.textContent=(n.titlePlain&&n.titlePlain.trim())?n.titlePlain:'新建备忘录';
+      var tWrap = document.createElement('div'); tWrap.className = 't-wrap';
+      var t = document.createElement('div'); t.className = 't';
+      var titleStr = (n.titlePlain&&n.titlePlain.trim())?n.titlePlain:'新建备忘录';
+      t.textContent = titleStr;
+      t.title = titleStr;
+      tWrap.appendChild(t);
+
+      var share = getShareForNote(n.id, n.titlePlain);
+      if (share) {
+        var badge = document.createElement('span');
+        var isExpired = share.expires_at && share.expires_at < Date.now();
+        badge.className = 'badge-share' + (isExpired ? ' expired' : '');
+        badge.textContent = isExpired ? '分享过期' : '已分享';
+        badge.title = isExpired ? '分享链接已过期' : (share.expires_at ? ('有效期至 ' + fmt(share.expires_at)) : '永久有效');
+        tWrap.appendChild(badge);
+      }
+
       var d=document.createElement('div'); d.className='d'; d.textContent=fmt(n.updated_at);
-      item.appendChild(t); item.appendChild(d);
+      item.appendChild(tWrap); item.appendChild(d);
       item.onclick=function(){ openNote(n.id); };
       list.appendChild(item);
     });
   }
 
   function openNote(id){
+    currentSnapshotShareId = null;
     function load(){
       api('/api/notes/'+id).then(function(note){
         var titlePromise = note.format === 2 ? decryptData(note.title) : Promise.resolve(note.title || '');
@@ -1016,12 +1260,15 @@ const PAGE = `<!doctype html>
           setStatus('编辑于 '+fmt(note.updated_at)); renderList(); showFmt(true);
           $('app').classList.add('viewing'); editor.focus();
           updateEditorState();
+          updateShareBanner();
         });
       });
     }
     if (dirty) saveNote(load); else load();
   }
+
   function newNote(){
+    currentSnapshotShareId = null;
     function go(){
       Promise.all([
         encryptData(''),
@@ -1039,10 +1286,12 @@ const PAGE = `<!doctype html>
         setStatus('新建'); renderList(); showFmt(true);
         $('app').classList.add('viewing'); editor.focus();
         updateEditorState();
+        updateShareBanner();
       });
     }
     if (dirty) saveNote(go); else go();
   }
+
   function saveNote(after){
     if (currentId===null) return;
     var content=sanitize(editor.innerHTML), titleText=deriveTitle();
@@ -1061,41 +1310,268 @@ const PAGE = `<!doctype html>
       if(n){ n.titlePlain=titleText; n.updated_at=r.updated_at; n.format=2; }
       notes.sort(function(a,b){return b.updated_at-a.updated_at;});
       renderList(); setStatus('已保存 '+fmt(r.updated_at));
+      updateShareBanner();
       if (typeof after==='function') after();
     }).catch(function(err) {
       setStatus('保存错误: ' + err);
     });
   }
+
   function deleteNote(){
     if (currentId===null) return;
-    if (!confirm('删除这条备忘录？')) return;
+    if (!confirm('删除这条备忘录？其公开分享链接也将即刻失效。')) return;
     var id=currentId;
     api('/api/notes/'+id,{method:'DELETE'}).then(function(){
       notes=notes.filter(function(x){return x.id!==id;});
-      currentId=null; dirty=false;
+      shares=shares.filter(function(s){return s.note_id!==id;});
+      currentId=null; currentSnapshotShareId=null; dirty=false;
       $('noteTitle').value = '';
       editor.innerHTML=''; refreshPlaceholder();
       setStatus(''); renderList(); showFmt(false); $('app').classList.remove('viewing');
       updateEditorState();
+      updateShareBanner();
+      loadShares(true);
     });
   }
 
-  function shareNote() {
-    if (currentId === null) return;
-    function proceed() {
+  function openShareItem(s){
+    if (s.note_id) {
+      var n = notes.find(function(x){ return x.id === s.note_id; });
+      if (n) {
+        openNote(n.id);
+        return;
+      }
+    }
+    if (s.title) {
+      var nByTitle = notes.find(function(x){ return x.titlePlain === s.title; });
+      if (nByTitle) {
+        openNote(nByTitle.id);
+        return;
+      }
+    }
+    function loadSnapshot() {
+      api('/api/shares/' + s.id).then(function(detail){
+        currentId = null;
+        currentSnapshotShareId = s.id;
+        dirty = false;
+        $('noteTitle').value = detail.title || '';
+        editor.innerHTML = sanitize(detail.content || '');
+        refreshPlaceholder();
+        setStatus('只读分享快照 (' + fmt(detail.created_at) + ')');
+        renderList();
+        showFmt(false);
+        $('app').classList.add('viewing');
+        updateEditorState();
+        updateShareBanner();
+      }).catch(function(err){
+        alert('加载分享快照失败: ' + err);
+      });
+    }
+    if (dirty) saveNote(loadSnapshot); else loadSnapshot();
+  }
+
+  function updateShareBanner(){
+    var banner = $('shareBanner');
+    if (!banner) return;
+    var share = null;
+    if (currentId !== null) {
+      share = getShareForNote(currentId, $('noteTitle').value);
+    } else if (currentSnapshotShareId) {
+      share = shares.find(function(s){ return s.id === currentSnapshotShareId; });
+    }
+    var shareBtn = $('shareBtn');
+    if (!share) {
+      banner.classList.remove('show');
+      if (shareBtn) {
+        shareBtn.textContent = '分享';
+        shareBtn.classList.remove('primary');
+      }
+      return;
+    }
+    banner.classList.add('show');
+    if (shareBtn) {
+      shareBtn.textContent = '已分享';
+      shareBtn.classList.add('primary');
+    }
+    var isExpired = share.expires_at && share.expires_at < Date.now();
+    var expStr = share.expires_at ? ('到期: ' + fmt(share.expires_at)) : '永久有效';
+    var statusHtml = isExpired
+      ? '<span style="color:#d4584a;font-weight:600;">已过期</span> (' + expStr + ')'
+      : '<span style="color:#2da44e;font-weight:600;">分享中</span> (' + expStr + ')';
+    $('shareBannerText').innerHTML = '公开分享：' + statusHtml;
+
+    $('sbCopyBtn').onclick = function(){
+      copyShareUrl(share.id, $('sbCopyBtn'));
+    };
+    $('sbExtendBtn').onclick = function(){
+      openShareModal(share);
+    };
+    $('sbCancelBtn').onclick = function(){
+      cancelShare(share.id, share.title);
+    };
+  }
+
+  function copyShareUrl(id, btnEl) {
+    var url = window.location.origin + '/s/' + id;
+    function done() {
+      if (!btnEl) return;
+      var old = btnEl.textContent;
+      btnEl.textContent = '已复制！';
+      btnEl.disabled = true;
+      setTimeout(function() {
+        btnEl.textContent = old;
+        btnEl.disabled = false;
+      }, 1500);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(done).catch(function() {
+        fallbackCopy(url, done);
+      });
+    } else {
+      fallbackCopy(url, done);
+    }
+  }
+
+  function fallbackCopy(text, cb) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch(e){}
+    document.body.removeChild(ta);
+    if (cb) cb();
+  }
+
+  function extendShare(shareId, currentExpires, addSeconds, btnEl) {
+    var baseTime = (currentExpires && currentExpires > Date.now()) ? currentExpires : Date.now();
+    var newExpires = addSeconds === 0 ? null : (baseTime + addSeconds * 1000);
+    var oldText = btnEl ? btnEl.textContent : '';
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.textContent = '延长中…';
+    }
+    api('/api/shares/' + shareId + '/extend', {
+      method: 'POST',
+      body: JSON.stringify({ expires_at: newExpires })
+    }).then(function() {
+      setStatus('分享有效期已更新');
+      loadShares(true);
+      if ($('shareModal').classList.contains('show')) {
+        var updatedShare = shares.find(function(s){ return s.id === shareId; });
+        if (updatedShare) openShareModal(updatedShare);
+      }
+    }).catch(function(err) {
+      alert('延长失败: ' + err);
+    }).finally(function() {
+      if (btnEl) {
+        btnEl.disabled = false;
+        btnEl.textContent = oldText;
+      }
+    });
+  }
+
+  function cancelShare(shareId, title) {
+    var name = title ? ('“' + title + '”') : '该备忘录';
+    if (!confirm('确定要取消' + name + '的公开分享吗？分享链接将即刻失效。')) return;
+    setStatus('正在取消分享…');
+    api('/api/shares/' + shareId, {
+      method: 'DELETE'
+    }).then(function() {
+      setStatus('分享已取消');
+      if (currentSnapshotShareId === shareId) {
+        currentSnapshotShareId = null;
+      }
+      $('shareModal').classList.remove('show');
+      loadShares(true);
+    }).catch(function(err) {
+      alert('取消失败: ' + err);
+      setStatus('取消失败: ' + err);
+    });
+  }
+
+  function syncShareContent(shareId) {
+    var content = sanitize(editor.innerHTML);
+    var titleText = deriveTitle();
+    setStatus('正在更新分享内容…');
+    api('/api/shares/' + shareId, {
+      method: 'PUT',
+      body: JSON.stringify({ title: titleText, content: content })
+    }).then(function() {
+      setStatus('分享内容已同步更新');
+      loadShares(true);
+      alert('已成功同步当前最新内容到该分享链接！');
+    }).catch(function(err) {
+      alert('更新失败: ' + err);
+      setStatus('更新失败: ' + err);
+    });
+  }
+
+  function openShareModal(existingShare) {
+    var share = existingShare || (currentId !== null ? getShareForNote(currentId, $('noteTitle').value) : null);
+    if (!share && currentSnapshotShareId) {
+      share = shares.find(function(s){ return s.id === currentSnapshotShareId; });
+    }
+
+    if (share) {
+      $('shareModalTitle').textContent = '管理已分享备忘录';
+      $('shareModalDesc').textContent = '此备忘录已公开分享，可在下方管理链接、延长有效期或取消分享。';
+      $('shareExistingArea').style.display = 'block';
+      $('shareConfigArea').style.display = 'none';
+      $('shareResultArea').style.display = 'none';
+      $('shareActionBtn').style.display = 'none';
+      $('copyShareBtn').style.display = 'none';
+
+      var shareUrl = window.location.origin + '/s/' + share.id;
+      $('shareExistingUrlInput').value = shareUrl;
+
+      var isExpired = share.expires_at && share.expires_at < Date.now();
+      var expStr = share.expires_at ? ('有效期至 ' + fmt(share.expires_at)) : '永久有效';
+      $('shareExistingStatus').innerHTML = '当前状态：' + (isExpired
+        ? '<strong style="color:#d4584a;">已过期</strong> (' + expStr + ')'
+        : '<strong style="color:#2da44e;">分享中</strong> (' + expStr + ')');
+
+      $('shareExistingCopyBtn').onclick = function(){
+        copyShareUrl(share.id, $('shareExistingCopyBtn'));
+      };
+      $('shareQuickExtend7Btn').onclick = function(){
+        extendShare(share.id, share.expires_at, 7 * 86400, $('shareQuickExtend7Btn'));
+      };
+      $('shareQuickExtend30Btn').onclick = function(){
+        extendShare(share.id, share.expires_at, 30 * 86400, $('shareQuickExtend30Btn'));
+      };
+      $('shareQuickExtendForeverBtn').onclick = function(){
+        extendShare(share.id, share.expires_at, 0, $('shareQuickExtendForeverBtn'));
+      };
+      $('shareSyncContentBtn').onclick = function(){
+        syncShareContent(share.id);
+      };
+      $('shareExistingCancelBtn').onclick = function(){
+        cancelShare(share.id, share.title);
+      };
+    } else {
+      $('shareModalTitle').textContent = '分享此备忘录';
+      $('shareModalDesc').textContent = '生成只读分享链接。未分享的备忘录保持端到端加密。';
+      $('shareExistingArea').style.display = 'none';
       $('shareConfigArea').style.display = 'block';
       $('shareResultArea').style.display = 'none';
       $('shareActionBtn').style.display = 'inline-block';
+      $('shareActionBtn').textContent = '生成分享链接';
       $('copyShareBtn').style.display = 'none';
       $('shareExpireSelect').value = '0';
       $('shareCustomDaysWrap').style.display = 'none';
       $('shareCustomDaysInput').value = '';
-      $('shareModal').classList.add('show');
     }
+    $('shareModal').classList.add('show');
+  }
+
+  function shareNote() {
+    if (currentId === null && !currentSnapshotShareId) return;
     if (dirty) {
-      saveNote(proceed);
+      saveNote(function(){ openShareModal(); });
     } else {
-      proceed();
+      openShareModal();
     }
   }
 
@@ -1119,18 +1595,25 @@ const PAGE = `<!doctype html>
     setStatus('准备分享…');
     api('/api/share', {
       method: 'POST',
-      body: JSON.stringify({ title: titleText, content: content, expires_in: expires_in })
+      body: JSON.stringify({
+        title: titleText,
+        content: content,
+        expires_in: expires_in,
+        note_id: currentId
+      })
     }).then(function(res) {
       if (res.id) {
         var shareUrl = window.location.origin + '/s/' + res.id;
         $('shareUrlInput').value = shareUrl;
         
         $('shareConfigArea').style.display = 'none';
+        $('shareExistingArea').style.display = 'none';
         $('shareResultArea').style.display = 'block';
         $('shareActionBtn').style.display = 'none';
         $('copyShareBtn').style.display = 'inline-block';
         
         setStatus('分享链接已生成');
+        loadShares(true);
       } else {
         setStatus('生成分享链接失败: ' + (res.error || '未知错误'));
       }
@@ -1149,13 +1632,15 @@ const PAGE = `<!doctype html>
     container.innerHTML = '<div style="padding:24px; text-align:center; color:var(--muted);">加载中…</div>';
     
     api('/api/shares').then(function(data) {
+      shares = Array.isArray(data) ? data : [];
+      updateTabCounts();
       container.innerHTML = '';
-      if (!data || data.length === 0) {
+      if (!shares || shares.length === 0) {
         container.innerHTML = '<div style="padding:24px; text-align:center; color:var(--muted);">暂无分享的备忘录</div>';
         return;
       }
       
-      data.forEach(function(item) {
+      shares.forEach(function(item) {
         var itemEl = document.createElement('div');
         itemEl.className = 'share-item';
         
@@ -1213,22 +1698,10 @@ const PAGE = `<!doctype html>
           }
           if (navigator.clipboard && navigator.clipboard.writeText) {
             navigator.clipboard.writeText(url).then(done).catch(function() {
-              var ta = document.createElement('textarea');
-              ta.value = url;
-              document.body.appendChild(ta);
-              ta.select();
-              document.execCommand('copy');
-              document.body.removeChild(ta);
-              done();
+              fallbackCopy(url, done);
             });
           } else {
-            var ta = document.createElement('textarea');
-            ta.value = url;
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            document.body.removeChild(ta);
-            done();
+            fallbackCopy(url, done);
           }
         };
       });
@@ -1237,41 +1710,14 @@ const PAGE = `<!doctype html>
         btn.onclick = function() {
           var id = this.getAttribute('data-id');
           var currentExpires = parseInt(this.getAttribute('data-expires'), 10);
-          var baseTime = currentExpires < Date.now() ? Date.now() : currentExpires;
-          var newExpires = baseTime + 7 * 24 * 60 * 60 * 1000;
-          
-          var self = this;
-          self.disabled = true;
-          self.textContent = '延长中…';
-          api('/api/shares/' + id + '/extend', {
-            method: 'POST',
-            body: JSON.stringify({ expires_at: newExpires })
-          }).then(function() {
-            loadAndRenderShares();
-          }).catch(function(err) {
-            alert('延长失败: ' + err);
-            self.disabled = false;
-            self.textContent = '延长7天';
-          });
+          extendShare(id, currentExpires, 7 * 86400, this);
         };
       });
       
       Array.prototype.forEach.call(container.querySelectorAll('.cancel-share-btn'), function(btn) {
         btn.onclick = function() {
           var id = this.getAttribute('data-id');
-          if (!confirm('确定要取消该公开分享吗？链接将即刻失效。')) return;
-          var self = this;
-          self.disabled = true;
-          self.textContent = '取消中…';
-          api('/api/shares/' + id, {
-            method: 'DELETE'
-          }).then(function() {
-            loadAndRenderShares();
-          }).catch(function(err) {
-            alert('取消失败: ' + err);
-            self.disabled = false;
-            self.textContent = '取消分享';
-          });
+          cancelShare(id, '');
         };
       });
       
@@ -1416,7 +1862,21 @@ const PAGE = `<!doctype html>
       $('shareCustomDaysInput').focus();
     }
   };
-  $('shareManageBtn').onclick = openShareManage;
+  $('tabAll').onclick = function() {
+    currentTab = 'all';
+    $('tabAll').classList.add('active');
+    $('tabShared').classList.remove('active');
+    renderList();
+  };
+  $('tabShared').onclick = function() {
+    currentTab = 'shared';
+    $('tabShared').classList.add('active');
+    $('tabAll').classList.remove('active');
+    renderList();
+  };
+  $('shareManageBtn').onclick = function() {
+    $('tabShared').click();
+  };
   $('closeShareManageBtn').onclick = function() {
     $('shareManageModal').classList.remove('show');
   };
