@@ -1531,6 +1531,7 @@ const PAGE = `<!doctype html>
       Promise.all(promises).then(function(decryptedNotes) {
         notes = decryptedNotes;
         showApp();
+        renderList();
         loadShares(true);
         loadTrashNotes(false);
         updateEditorState();
@@ -1545,7 +1546,7 @@ const PAGE = `<!doctype html>
     return api('/api/shares').then(function(data){
       shares = Array.isArray(data) ? data : [];
       updateTabCounts();
-      if (andRender && currentTab === 'shared') renderList();
+      if (andRender && currentTab !== 'trash') renderList();
       updateShareBanner();
       return shares;
     }).catch(function(err){
